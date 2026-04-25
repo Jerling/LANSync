@@ -1,0 +1,36 @@
+# Build outputs
+*.apk
+*.aab
+*.dex
+*.class
+*.jar
+*.ear
+*.war
+
+# Android build
+build/
+app/build/
+.gradle/
+*.iml
+.idea/
+local.properties
+*.log
+
+# Windows
+Thumbs.db
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+Server/.venv/
+Server/.venv2/
+.env
+
+# Misc
+*.swp
+*.swo
+*~

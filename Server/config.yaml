@@ -1,0 +1,21 @@
+# LANSync Server Configuration
+server:
+  host: "0.0.0.0"
+  port: 8765
+  debug: false
+
+auth:
+  jwt_secret: "your-secret-key-change-in-production"
+  token_expire_hours: 720  # 30 days
+
+storage:
+  base_dir: "D:/Photos"
+  max_file_size_mb: 500
+
+users:
+  - username: "photosync"
+    password: "sync123"  # Change in production
+
+logging:
+  level: "INFO"
+  file: "logs/server.log"

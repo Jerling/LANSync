@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="lansync_primary">#2196F3</color>
+    <color name="lansync_primary_dark">#1976D2</color>
+    <color name="lansync_secondary">#03DAC6</color>
+    <color name="lansync_background">#F5F5F5</color>
+    <color name="lansync_surface">#FFFFFF</color>
+    <color name="lansync_error">#B00020</color>
+    <color name="lansync_success">#4CAF50</color>
+    <color name="lansync_warning">#FF9800</color>
+</resources>

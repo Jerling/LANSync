@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">LANSync</string>
+    <string name="login">登录</string>
+    <string name="username">用户名</string>
+    <string name="password">密码</string>
+    <string name="settings">设置</string>
+    <string name="logout">退出登录</string>
+    <string name="wifi_status">WiFi 状态</string>
+    <string name="sync_status">同步状态</string>
+    <string name="start_sync_service">启动同步服务</string>
+    <string name="stop_sync_service">停止同步服务</string>
+    <string name="server_settings">服务器设置</string>
+    <string name="wifi_settings">WiFi 设置</string>
+    <string name="save_settings">保存设置</string>
+</resources>
