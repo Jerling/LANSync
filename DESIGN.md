@@ -66,8 +66,9 @@
 - [x] 图片文件支持 (.jpg, .jpeg, .png, .gif, .bmp, .webp, .heic, .heif)
 - [x] 文件类型统计（图片/视频数量）
 - [x] 配置路径修正 (`/mnt/d/Photos`)
+- [x] 断点续传（分片上传，1MB/块，支持网络中断后从断点恢复）
 
-### Phase 2: Android App ✅ (80%)
+### Phase 2: Android App ✅ (90%)
 
 - [x] 项目搭建（Kotlin + Jetpack Compose）
 - [x] 登录模块（LoginScreen + LoginViewModel）
@@ -98,6 +99,11 @@
 | GET | `/api/sync/status` | 获取同步状态 |
 | POST | `/api/upload/photo` | 上传单张照片 |
 | POST | `/api/upload/batch` | 批量上传照片 |
+| POST | `/api/upload/resume/init` | 初始化分片上传 |
+| POST | `/api/upload/resume/chunk` | 上传分片数据 |
+| POST | `/api/upload/resume/complete` | 完成分片上传 |
+| GET | `/api/upload/resume/status` | 查询分片状态 |
+| POST | `/api/upload/resume/cancel` | 取消分片上传 |
 
 ### 健康检查
 
