@@ -10,9 +10,12 @@ import com.lansync.app.domain.model.*
 import dagger.hilt.android.qualifiers.ApplicationContext
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.MultipartBody
+import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
+import okio.BufferedSink
 import java.io.File
+import java.io.InputStream
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -111,18 +114,24 @@ class SyncRepository @Inject constructor(
     ): Result<UploadResponse> {
         return try {
             val contentResolver = context.contentResolver
-            val inputStream = contentResolver.openInputStream(contentUri)
-                ?: return Result.failure(Exception("Cannot open file"))
-
-            val requestBody = inputStream.readBytes().toRequestBody("image/*".toMediaTypeOrNull())
-            inputStream.close()
-
-            val mediaType = if (fileName.endsWith(".mp4") || fileName.endsWith(".mov") ||
-                                fileName.endsWith(".avi") || fileName.endsWith(".mkv")) {
-                "video/*"
-            } else {
-                "image/*"
+            // 流式 UploadStreamingBody 避免 OOM：分块读取不一次性加载整个文件到内存
+            val isVideo = fileName.endsWith(".mp4") || fileName.endsWith(".mov") ||
+                           fileName.endsWith(".avi") || fileName.endsWith(".mkv")
+            val mediaTypeStr = if (isVideo) "video/*" else "image/*"
+            val streamingBody = object : RequestBody() {
+                override fun contentType() = mediaTypeStr.toMediaTypeOrNull()
+                override fun contentLength() = size.coerceAtMost(Long.MAX_VALUE)
+                override fun writeTo(sink: BufferedSink) {
+                    contentResolver.openInputStream(contentUri)?.use { input ->
+                        val buffer = ByteArray(8192)
+                        var bytesRead: Int
+                        while (input.read(buffer).also { bytesRead = it } != -1) {
+                            sink.write(buffer, 0, bytesRead)
+                        }
+                    }
+                }
             }
+            val requestBody = streamingBody
             val multipartBody = MultipartBody.Part.createFormData("file", fileName, requestBody)
             val timestampBody = timestamp?.toString()?.toRequestBody("text/plain".toMediaTypeOrNull())
             val deviceIdBody = deviceId.toRequestBody("text/plain".toMediaTypeOrNull())

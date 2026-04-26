@@ -95,8 +95,10 @@ class SyncPhotosUseCase @Inject constructor(
                 val dateModified = cursor.getLong(dateModifiedColumn)
                 val path = cursor.getString(dataColumn)
 
-                // 跳过无效文件
+                // 跳过无效文件（路径为空）
                 if (path.isNullOrEmpty()) continue
+                // 跳过 name 为空的记录（极少数情况下 DISPLAY_NAME 可能为 null）
+                if (name.isNullOrEmpty()) continue
 
                 // 优先用 DATE_TAKEN，为0则用 DATE_MODIFIED
                 val effectiveTimestamp = if (dateTaken > 0) dateTaken else dateModified
@@ -123,9 +125,21 @@ class SyncPhotosUseCase @Inject constructor(
      */
     suspend fun filterUnsyncedPhotos(photos: List<PhotoFile>): List<PhotoFile> {
         // 先获取服务器上已存在的文件列表
-        val serverFiles = repository.getExistingFiles().getOrNull() ?: emptyMap()
+        val serverFilesResult = repository.getExistingFiles()
+        if (serverFilesResult.isFailure) {
+            android.util.Log.e("SyncPhotos", "getExistingFiles failed: ${serverFilesResult.exceptionOrNull()?.message}")
+            // 网络失败时，走本地记录判断，视为未同步需要上传
+            return photos.filter { !repository.isFileSyncedByNameAndSize(it.name, it.size) }
+        }
+        val serverFiles = serverFilesResult.getOrNull() ?: emptyMap()
 
         return photos.filter { photo ->
+            // 跳过 name 为空的无效记录
+            if (photo.name.isNullOrBlank()) {
+                android.util.Log.w("SyncPhotos", "Skipping photo with null/empty name: path=${photo.path}")
+                return@filter false
+            }
+
             val localSynced = repository.isFileSyncedByNameAndSize(photo.name, photo.size)
             if (localSynced) {
                 // 本地记录已同步，但服务器文件可能已被删除
@@ -177,6 +191,8 @@ class SyncPhotosUseCase @Inject constructor(
                 android.util.Log.e("SyncPhotos", "upload failed: ${result.exceptionOrNull()?.message}")
                 failCount++
             }
+            // 每张照片处理完后主动回收内存，避免多张照片叠加导致 OOM
+            System.gc()
         }
 
         if (failCount > 0) {

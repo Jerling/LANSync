@@ -41,7 +41,7 @@ class HomeViewModel @Inject constructor(
 
     private fun observeServiceSyncState() {
         viewModelScope.launch {
-            WifiSyncService.syncStateBroadcast.collect { state ->
+            WifiSyncService.syncStateChannel.collect { state ->
                 _uiState.value = _uiState.value.copy(syncState = state)
                 // 当同步完成或出错时，重置服务运行状态
                 if (state is SyncState.Completed || state is SyncState.Error) {
@@ -66,7 +66,7 @@ class HomeViewModel @Inject constructor(
 
     fun startSyncService() {
         val context = getApplication<Application>()
-        WifiSyncService.startService(context, "")
+        WifiSyncService.startService(context)
         _uiState.value = _uiState.value.copy(isServiceRunning = true)
     }
 

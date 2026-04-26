@@ -134,15 +134,6 @@ data class PhotoFile(
 )
 
 /**
- * WiFi 状态
- */
-sealed class WifiState {
-    object Connected : WifiState()
-    object Disconnected : WifiState()
-    data class WrongNetwork(val currentSSID: String) : WifiState()
-}
-
-/**
  * 同步状态
  */
 sealed class SyncState {

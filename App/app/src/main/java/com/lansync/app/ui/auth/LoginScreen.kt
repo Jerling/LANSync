@@ -31,6 +31,17 @@ fun LoginScreen(
     var password by remember { mutableStateOf("") }
     var passwordVisible by remember { mutableStateOf(false) }
 
+    // 启动时加载保存的账号密码，并自动登录
+    LaunchedEffect(Unit) {
+        val savedUser = uiState.savedUsername
+        val savedPass = uiState.savedPassword
+        if (savedUser.isNotBlank() && savedPass.isNotBlank()) {
+            username = savedUser
+            password = savedPass
+            viewModel.login(savedUser, savedPass)
+        }
+    }
+
     LaunchedEffect(uiState.isLoggedIn) {
         if (uiState.isLoggedIn) {
             onLoginSuccess()

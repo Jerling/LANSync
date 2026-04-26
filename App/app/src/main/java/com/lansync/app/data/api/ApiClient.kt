@@ -32,7 +32,7 @@ object ApiClient {
 
     private fun createRetrofit(): Retrofit {
         val loggingInterceptor = HttpLoggingInterceptor().apply {
-            level = HttpLoggingInterceptor.Level.BODY
+            level = HttpLoggingInterceptor.Level.NONE // BODY 会将上传内容全部读入内存打印，日志无用且极易 OOM
         }
 
         val authInterceptor = okhttp3.Interceptor { chain ->
