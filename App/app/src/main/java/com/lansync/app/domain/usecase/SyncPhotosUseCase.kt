@@ -173,6 +173,7 @@ class SyncPhotosUseCase @Inject constructor(
         emit(SyncState.Uploading)
         var successCount = 0
         var failCount = 0
+        val failedFileNames = mutableListOf<String>()
 
         unsyncedPhotos.forEachIndexed { index, photo ->
             emit(SyncState.Progress(index + 1, total))
@@ -190,13 +191,14 @@ class SyncPhotosUseCase @Inject constructor(
             } else {
                 android.util.Log.e("SyncPhotos", "upload failed: ${result.exceptionOrNull()?.message}")
                 failCount++
+                failedFileNames.add(photo.name)
             }
             // 每张照片处理完后主动回收内存，避免多张照片叠加导致 OOM
             System.gc()
         }
 
         if (failCount > 0) {
-            emit(SyncState.Error("上传完成: $successCount 成功, $failCount 失败"))
+            emit(SyncState.Error("上传完成: $successCount 成功, $failCount 失败", failedFileNames))
         } else {
             emit(SyncState.Completed)
         }

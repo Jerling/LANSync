@@ -204,6 +204,36 @@ fun HomeScreen(
                         Text(text = text, color = color)
                     }
 
+                    // 显示失败文件名列表
+                    if (uiState.syncState is SyncState.Error) {
+                        val errorState = uiState.syncState as SyncState.Error
+                        if (errorState.failedFileNames.isNotEmpty()) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Divider()
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = "失败文件 (${errorState.failedFileNames.size}):",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            LazyColumn(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(max = 120.dp)
+                            ) {
+                                items(errorState.failedFileNames) { fileName ->
+                                    Text(
+                                        text = fileName,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(vertical = 1.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+
                     if (uiState.syncState is SyncState.Progress) {
                         Spacer(modifier = Modifier.height(8.dp))
                         val progress = uiState.syncState as SyncState.Progress

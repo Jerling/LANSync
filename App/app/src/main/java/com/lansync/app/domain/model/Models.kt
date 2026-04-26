@@ -143,5 +143,5 @@ sealed class SyncState {
     object Uploading : SyncState()
     data class Progress(val current: Int, val total: Int) : SyncState()
     object Completed : SyncState()
-    data class Error(val message: String) : SyncState()
+    data class Error(val message: String, val failedFileNames: List<String> = emptyList()) : SyncState()
 }
