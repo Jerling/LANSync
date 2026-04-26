@@ -14,6 +14,7 @@ import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import okio.BufferedSink
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.InputStream
 import javax.inject.Inject
@@ -200,5 +201,109 @@ class SyncRepository @Inject constructor(
 
     suspend fun getSyncedFilesCount(): Int {
         return syncedFileDao.getCount()
+    }
+
+    // ==================== 分片续传 ====================
+
+    companion object {
+        const val CHUNK_SIZE = 1024 * 1024L // 1MB per chunk
+    }
+
+    /**
+     * 生成稳定的文件ID（用于断点续传）
+     */
+    fun generateFileId(fileName: String, fileSize: Long): String {
+        val input = "$fileName|$fileSize"
+        val md = java.security.MessageDigest.getInstance("MD5")
+        val digest = md.digest(input.toByteArray())
+        return digest.joinToString("") { "%02x".format(it) }
+    }
+
+    /**
+     * 分片上传（支持断点续传）
+     * 流程: init -> query status -> chunk (loop) -> complete
+     */
+    suspend fun uploadPhotoResumable(
+        contentUri: android.net.Uri,
+        fileName: String,
+        size: Long,
+        timestamp: Long?,
+        deviceId: String
+    ): Result<UploadResponse> {
+        val fileId = generateFileId(fileName, size)
+        val contentResolver = context.contentResolver
+
+        // Step 1: 初始化，查询断点
+        val initResult = api.resumeInit(ResumeInitRequest(fileId, size, fileName, timestamp))
+        if (!initResult.isSuccessful || initResult.body() == null) {
+            return Result.failure(Exception("Failed to init resumable upload: ${initResult.errorBody()?.string()}"))
+        }
+        val uploadedSize = initResult.body()!!.uploadedSize
+
+        // Step 2: 从断点开始上传分片
+        if (uploadedSize < size) {
+            contentResolver.openInputStream(contentUri)?.use { input ->
+                input.skip(uploadedSize)
+
+                var offset = uploadedSize
+                val buffer = ByteArray(8192)
+
+                while (true) {
+                    // 读取一个分片
+                    val chunkData = ByteArrayOutputStream()
+                    var bytesRead = 0
+                    while (bytesRead < CHUNK_SIZE) {
+                        val r = input.read(buffer)
+                        if (r == -1) break
+                        chunkData.write(buffer, 0, r)
+                        bytesRead += r
+                    }
+                    if (bytesRead == 0) break
+
+                    val chunkBytes = chunkData.toByteArray()
+                    if (chunkBytes.size == 0) break
+
+                    // 上传分片
+                    val isVideo = fileName.endsWith(".mp4") || fileName.endsWith(".mov") ||
+                                  fileName.endsWith(".avi") || fileName.endsWith(".mkv")
+                    val mediaType = if (isVideo) "video/*" else "image/*"
+
+                    val chunkBody = object : okhttp3.RequestBody() {
+                        override fun contentType() = mediaType.toMediaTypeOrNull()
+                        override fun contentLength() = chunkBytes.size.toLong()
+                        override fun writeTo(sink: BufferedSink) {
+                            sink.write(chunkBytes)
+                        }
+                    }
+                    val fileIdBody = fileId.toRequestBody("text/plain".toMediaTypeOrNull())
+                    val chunkPart = MultipartBody.Part.createFormData("chunk", fileName, chunkBody)
+
+                    val chunkResult = api.resumeChunk(fileIdBody, chunkPart)
+                    if (!chunkResult.isSuccessful || chunkResult.body() == null) {
+                        return Result.failure(Exception("Chunk upload failed at offset $offset"))
+                    }
+                    offset = chunkResult.body()!!.uploadedSize
+                }
+            }
+        }
+
+        // Step 3: 完成上传
+        val completeResult = api.resumeComplete(ResumeCompleteRequest(fileId, timestamp))
+        if (!completeResult.isSuccessful || completeResult.body() == null || completeResult.body()!!.data == null) {
+            return Result.failure(Exception("Failed to complete upload: ${completeResult.errorBody()?.string()}"))
+        }
+
+        val uploadData = completeResult.body()!!.data!!
+        // 记录已同步
+        syncedFileDao.insert(
+            SyncedFileEntity(
+                filePath = contentUri.toString(),
+                fileName = fileName,
+                fileSize = size,
+                timestamp = timestamp ?: 0,
+                serverPath = uploadData.savedPath
+            )
+        )
+        return Result.success(UploadResponse(true, "Uploaded", uploadData))
     }
 }

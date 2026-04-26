@@ -178,7 +178,7 @@ class SyncPhotosUseCase @Inject constructor(
         unsyncedPhotos.forEachIndexed { index, photo ->
             emit(SyncState.Progress(index + 1, total))
 
-            val result = repository.uploadPhotoFromUri(
+            val result = repository.uploadPhotoResumable(
                 contentUri = photo.contentUri,
                 fileName = photo.name,
                 size = photo.size,

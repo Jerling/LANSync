@@ -170,6 +170,161 @@ def setup_routes(app, photo_storage: PhotoStorage):
             "files": files
         })
 
+    # ==================== 分片续传相关 ====================
+
+    @app.route("/api/upload/resume/init", methods=["POST"])
+    @require_auth
+    def resume_init():
+        """
+        初始化分片上传
+        请求体: { file_id, total_size, original_name }
+        """
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "Invalid request"}), 400
+
+        file_id = data.get("file_id")
+        total_size = data.get("total_size", 0)
+        original_name = data.get("original_name", "")
+
+        if not file_id:
+            return jsonify({"error": "file_id required"}), 400
+
+        # 验证文件类型
+        ext = original_name.rsplit(".", 1)[-1].lower() if "." in original_name else ""
+        if f".{ext}" not in SUPPORTED_EXTS:
+            return jsonify({"error": f"Unsupported file type: .{ext}"}), 400
+
+        timestamp = data.get("timestamp")
+        result = photo_storage.init_partial_upload(file_id, total_size, original_name)
+
+        logger.info(f"Partial upload init: {original_name} ({file_id}), already have {result['uploaded_size']}/{total_size} bytes")
+
+        return jsonify({
+            "success": True,
+            "uploaded_size": result["uploaded_size"],
+            "total_size": total_size,
+        })
+
+    @app.route("/api/upload/resume/chunk", methods=["POST"])
+    @require_auth
+    def resume_chunk():
+        """
+        上传分片数据
+        请求体: { file_id, chunk (bytes in multipart) }
+        """
+        file_id = request.form.get("file_id")
+        if not file_id:
+            return jsonify({"error": "file_id required"}), 400
+
+        if "chunk" not in request.files:
+            return jsonify({"error": "No chunk part"}), 400
+
+        chunk = request.files["chunk"]
+        chunk_data = chunk.read()
+
+        result = photo_storage.append_partial(file_id, chunk_data)
+
+        # 获取 meta 确认进度
+        meta_path = photo_storage.get_partial_path(file_id).with_suffix(".meta")
+        total_size = 0
+        if meta_path.exists():
+            try:
+                with open(meta_path, "r", encoding="utf-8") as f:
+                    meta = json.load(f)
+                total_size = meta.get("total_size", 0)
+            except Exception:
+                pass
+
+        logger.debug(f"Chunk appended for {file_id}: {result['uploaded_size']}/{total_size}")
+
+        return jsonify({
+            "success": True,
+            "uploaded_size": result["uploaded_size"],
+            "total_size": total_size,
+        })
+
+    @app.route("/api/upload/resume/complete", methods=["POST"])
+    @require_auth
+    def resume_complete():
+        """
+        完成分片上传
+        请求体: { file_id, timestamp (optional) }
+        """
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "Invalid request"}), 400
+
+        file_id = data.get("file_id")
+        if not file_id:
+            return jsonify({"error": "file_id required"}), 400
+
+        # 可选：允许在完成时补充 timestamp
+        timestamp = data.get("timestamp")
+        if timestamp:
+            partial_path = photo_storage.get_partial_path(file_id)
+            meta_path = partial_path.with_suffix(".meta")
+            if meta_path.exists():
+                try:
+                    with open(meta_path, "r", encoding="utf-8") as f:
+                        meta = json.load(f)
+                    meta["timestamp"] = timestamp
+                    with open(meta_path, "w", encoding="utf-8") as f:
+                        json.dump(meta, f, ensure_ascii=False)
+                except Exception:
+                    pass
+
+        try:
+            result = photo_storage.complete_partial_upload(file_id)
+            logger.info(f"Partial upload completed: {result['original_name']} by {request.user}")
+            return jsonify({
+                "success": True,
+                "data": result
+            })
+        except FileNotFoundError as e:
+            return jsonify({"error": str(e)}), 404
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+
+    @app.route("/api/upload/resume/status", methods=["GET"])
+    @require_auth
+    def resume_status():
+        """
+        查询分片上传状态
+        参数: file_id
+        """
+        file_id = request.args.get("file_id")
+        if not file_id:
+            return jsonify({"error": "file_id required"}), 400
+
+        result = photo_storage.get_partial_status(file_id)
+        return jsonify({
+            "success": True,
+            "data": result
+        })
+
+    @app.route("/api/upload/resume/cancel", methods=["POST"])
+    @require_auth
+    def resume_cancel():
+        """
+        取消分片上传
+        请求体: { file_id }
+        """
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "Invalid request"}), 400
+
+        file_id = data.get("file_id")
+        if not file_id:
+            return jsonify({"error": "file_id required"}), 400
+
+        result = photo_storage.cancel_partial_upload(file_id)
+        logger.info(f"Partial upload cancelled: {file_id}")
+        return jsonify({
+            "success": True,
+            "removed": result["removed"]
+        })
+
     # ==================== 健康检查 ====================
     
     @app.route("/api/health", methods=["GET"])

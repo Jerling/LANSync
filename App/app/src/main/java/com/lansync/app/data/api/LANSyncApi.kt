@@ -48,4 +48,32 @@ interface LANSyncApi {
      */
     @GET("api/health")
     suspend fun healthCheck(): Response<HealthResponse>
+
+    /**
+     * 初始化分片上传
+     */
+    @POST("api/upload/resume/init")
+    suspend fun resumeInit(@Body request: ResumeInitRequest): Response<ResumeInitResponse>
+
+    /**
+     * 上传分片
+     */
+    @Multipart
+    @POST("api/upload/resume/chunk")
+    suspend fun resumeChunk(
+        @Part("file_id") fileId: RequestBody,
+        @Part chunk: MultipartBody.Part
+    ): Response<ResumeChunkResponse>
+
+    /**
+     * 完成分片上传
+     */
+    @POST("api/upload/resume/complete")
+    suspend fun resumeComplete(@Body request: ResumeCompleteRequest): Response<ResumeCompleteResponse>
+
+    /**
+     * 查询分片上传状态
+     */
+    @GET("api/upload/resume/status")
+    suspend fun resumeStatus(@Query("file_id") fileId: String): Response<ResumeStatusResponse>
 }

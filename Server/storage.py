@@ -210,3 +210,177 @@ class PhotoStorage:
                 }
 
         return files
+
+    # ==================== 分片续传相关 ====================
+
+    def _get_partial_dir(self) -> Path:
+        """获取分片暂存目录"""
+        partial_dir = self.base_dir / "_partial"
+        partial_dir.mkdir(parents=True, exist_ok=True)
+        return partial_dir
+
+    def get_partial_path(self, file_id: str) -> Path:
+        """根据文件ID获取分片文件路径"""
+        return self._get_partial_dir() / f"{file_id}.part"
+
+    def init_partial_upload(self, file_id: str, total_size: int, original_name: str) -> dict:
+        """
+        初始化分片上传，保存文件元信息到 .meta 文件
+        """
+        partial_path = self.get_partial_path(file_id)
+        meta_path = partial_path.with_suffix(".meta")
+
+        # 如果已存在分片文件，返回已上传大小
+        uploaded_size = partial_path.stat().st_size if partial_path.exists() else 0
+
+        # 写入 meta 文件（即使存在也要更新，以防 total_size 变化）
+        meta = {
+            "file_id": file_id,
+            "original_name": original_name,
+            "total_size": total_size,
+            "uploaded_size": uploaded_size,
+        }
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False)
+
+        return {"uploaded_size": uploaded_size}
+
+    def append_partial(self, file_id: str, chunk_data: bytes) -> dict:
+        """
+        追加分片数据到临时文件
+        """
+        partial_path = self.get_partial_path(file_id)
+        meta_path = partial_path.with_suffix(".meta")
+
+        # 追加模式写入
+        with open(partial_path, "ab") as f:
+            f.write(chunk_data)
+
+        # 更新 meta 中的 uploaded_size
+        uploaded_size = partial_path.stat().st_size
+        if meta_path.exists():
+            try:
+                with open(meta_path, "r", encoding="utf-8") as f:
+                    meta = json.load(f)
+                meta["uploaded_size"] = uploaded_size
+                with open(meta_path, "w", encoding="utf-8") as f:
+                    json.dump(meta, f, ensure_ascii=False)
+            except Exception:
+                pass
+
+        return {"uploaded_size": uploaded_size}
+
+    def complete_partial_upload(self, file_id: str) -> dict:
+        """
+        完成分片上传：将 .part 文件 Move 到最终路径，清理 meta
+        """
+        partial_path = self.get_partial_path(file_id)
+        meta_path = partial_path.with_suffix(".meta")
+
+        if not partial_path.exists():
+            raise FileNotFoundError(f"Partial file not found: {file_id}")
+
+        # 读取 meta
+        meta = {}
+        if meta_path.exists():
+            with open(meta_path, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+
+        original_name = meta.get("original_name", file_id)
+        total_size = meta.get("total_size", partial_path.stat().st_size)
+        timestamp = meta.get("timestamp")
+
+        # 验证完整性
+        actual_size = partial_path.stat().st_size
+        if actual_size != total_size:
+            raise ValueError(f"Incomplete upload: expected {total_size}, got {actual_size}")
+
+        # 移动到最终路径（复用 save_photo 的目录逻辑）
+        ext = Path(original_name).suffix.lower()
+        file_type = "video" if ext in VIDEO_EXTS else "image"
+
+        # 确定目标路径
+        date_path = self.get_date_path_from_name(original_name)
+        base_name = Path(original_name).stem
+        final_path = date_path / original_name
+        counter = 1
+        while final_path.exists():
+            new_name = f"{base_name}_{timestamp or int(datetime.now().timestamp())}{ext}"
+            final_path = date_path / new_name
+            if final_path.exists():
+                new_name = f"{base_name}_{timestamp or int(datetime.now().timestamp())}_{counter}{ext}"
+                final_path = date_path / new_name
+                counter += 1
+
+        # Move 文件
+        partial_path.rename(final_path)
+
+        # 清理 meta
+        if meta_path.exists():
+            meta_path.unlink()
+
+        file_size = final_path.stat().st_size
+        relative_path = str(final_path.relative_to(self.base_dir))
+
+        # 记录到 manifest
+        manifest = self._load_manifest()
+        manifest[original_name] = {
+            "saved_name": final_path.name,
+            "size": file_size,
+            "type": file_type,
+            "timestamp": timestamp,
+            "saved_path": relative_path
+        }
+        self._save_manifest(manifest)
+
+        return {
+            "original_name": original_name,
+            "saved_name": final_path.name,
+            "path": relative_path,
+            "size": file_size,
+            "timestamp": timestamp,
+            "type": file_type
+        }
+
+    def get_partial_status(self, file_id: str) -> dict:
+        """查询分片上传状态"""
+        partial_path = self.get_partial_path(file_id)
+        meta_path = partial_path.with_suffix(".meta")
+
+        if not partial_path.exists():
+            return {"exists": False, "uploaded_size": 0, "total_size": 0}
+
+        uploaded_size = partial_path.stat().st_size
+        total_size = 0
+        original_name = file_id
+
+        if meta_path.exists():
+            try:
+                with open(meta_path, "r", encoding="utf-8") as f:
+                    meta = json.load(f)
+                total_size = meta.get("total_size", 0)
+                original_name = meta.get("original_name", file_id)
+            except Exception:
+                pass
+
+        return {
+            "exists": True,
+            "uploaded_size": uploaded_size,
+            "total_size": total_size,
+            "original_name": original_name,
+        }
+
+    def cancel_partial_upload(self, file_id: str) -> dict:
+        """取消分片上传，清理临时文件"""
+        partial_path = self.get_partial_path(file_id)
+        meta_path = partial_path.with_suffix(".meta")
+
+        removed = []
+        if partial_path.exists():
+            partial_path.unlink()
+            removed.append(str(partial_path))
+        if meta_path.exists():
+            meta_path.unlink()
+            removed.append(str(meta_path))
+
+        return {"removed": removed}

@@ -120,6 +120,70 @@ data class ErrorResponse(
     val error: String
 )
 
+// ==================== 分片续传相关 ====================
+
+/**
+ * 分片上传初始化请求
+ */
+data class ResumeInitRequest(
+    @SerializedName("file_id") val fileId: String,
+    @SerializedName("total_size") val totalSize: Long,
+    @SerializedName("original_name") val originalName: String,
+    val timestamp: Long? = null
+)
+
+/**
+ * 分片上传初始化响应
+ */
+data class ResumeInitResponse(
+    val success: Boolean,
+    @SerializedName("uploaded_size") val uploadedSize: Long,
+    @SerializedName("total_size") val totalSize: Long
+)
+
+/**
+ * 分片上传响应
+ */
+data class ResumeChunkResponse(
+    val success: Boolean,
+    @SerializedName("uploaded_size") val uploadedSize: Long,
+    @SerializedName("total_size") val totalSize: Long
+)
+
+/**
+ * 分片上传完成请求
+ */
+data class ResumeCompleteRequest(
+    @SerializedName("file_id") val fileId: String,
+    val timestamp: Long? = null
+)
+
+/**
+ * 分片上传完成响应
+ */
+data class ResumeCompleteResponse(
+    val success: Boolean,
+    val data: UploadData?
+)
+
+/**
+ * 分片上传状态响应
+ */
+data class ResumeStatusResponse(
+    val success: Boolean,
+    val data: ResumeStatusData?
+)
+
+/**
+ * 分片上传状态数据
+ */
+data class ResumeStatusData(
+    val exists: Boolean,
+    @SerializedName("uploaded_size") val uploadedSize: Long,
+    @SerializedName("total_size") val totalSize: Long,
+    @SerializedName("original_name") val originalName: String?
+)
+
 /**
  * 照片文件
  */
