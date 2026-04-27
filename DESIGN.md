@@ -67,6 +67,7 @@
 - [x] 文件类型统计（图片/视频数量）
 - [x] 配置路径修正 (`/mnt/d/Photos`)
 - [x] 断点续传（分片上传，1MB/块，支持网络中断后从断点恢复）
+- [x] 云相册 API（照片列表、缩略图、原图查看）
 
 ### Phase 2: Android App ✅ (90%)
 
@@ -78,6 +79,7 @@
 - [x] 上传模块（SyncRepository + Retrofit）
 - [x] Token 管理（TokenManager + DataStore）
 - [x] 本地同步记录数据库（Room）
+- [ ] 云相册（GalleryScreen + ViewModel）
 - [ ] 完整测试
 - [ ] 权限处理完善
 
@@ -111,6 +113,69 @@
 |------|------|------|
 | GET | `/api/health` | 服务健康检查 |
 | GET | `/` | 首页信息 |
+
+### 云相册
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/gallery/list` | 获取所有照片列表（按日期分组） |
+| GET | `/api/gallery/thumb/{file_id}` | 获取缩略图（首次自动生成并缓存） |
+| GET | `/api/gallery/photo/{path}` | 获取原图（path 为相对路径） |
+
+---
+
+## 云相册功能
+
+### 功能概述
+
+手机删除照片后，可在 App 内浏览通过 LANSync 已同步到电脑的所有照片，不占用手机存储空间。
+
+### 缩略图机制
+
+- 服务器在 `_thumbs/` 目录缓存缩略图
+- 缩略图命名：`{md5(original_path)}.jpg`
+- 首次请求时自动生成（800px 宽），后续直接返回缓存
+- 支持 jpeg/png/webp/gif/bmp/heic/heif
+
+### 目录结构
+
+```
+Photos/
+├── _thumbs/                    # 缩略图缓存
+│   ├── abc123.jpg             # 缩略图
+│   └── def456.jpg
+├── _partial/                   # 分片上传临时文件
+├── 2026/
+│   └── 04/
+│       └── 27/
+│           ├── IMG_20260427_123456.jpg
+│           └── VID_20260427_654321.mp4
+└── manifest.json
+```
+
+### 照片列表响应结构
+
+```json
+{
+  "success": true,
+  "groups": [
+    {
+      "date": "2026-04-27",
+      "photos": [
+        {
+          "id": "abc123",
+          "name": "IMG_20260427_123456.jpg",
+          "path": "2026/04/27/IMG_20260427_123456.jpg",
+          "size": 1234567,
+          "type": "image",
+          "thumb_exists": true
+        }
+      ]
+    }
+  ],
+  "total_count": 1
+}
+```
 
 ---
 
@@ -193,4 +258,4 @@ users:
 
 ---
 
-*最后更新：2026-04-26*
+*最后更新：2026-04-27*

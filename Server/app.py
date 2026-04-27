@@ -51,7 +51,7 @@ def create_app(config_path: str = "config.yaml"):
     photo_storage = PhotoStorage(storage_base)
     
     # 注册路由
-    setup_routes(app, photo_storage)
+    setup_routes(app, photo_storage, cfg)
     
     logger.info(f"LANSync Server started on {cfg['server']['host']}:{cfg['server']['port']}")
     logger.info(f"Storage base directory: {storage_base}")

@@ -4,11 +4,15 @@ import json
 import logging
 import threading
 import re
+import hashlib
 from datetime import datetime
 from pathlib import Path
 from flask import current_app
 
 logger = logging.getLogger(__name__)
+
+# 支持的图片格式（用于缩略图生成）
+THUMB_SUPPORTED_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".heic", ".heif"}
 
 # 支持的图片和视频格式
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".heic", ".heif"}
@@ -19,11 +23,44 @@ class PhotoStorage:
     """照片/视频存储管理器"""
 
     def __init__(self, base_dir: str):
-        self.base_dir = Path(base_dir)
+        self.base_dir = self._normalize_path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self._manifest_path = self.base_dir / "manifest.json"
         self._lock = threading.Lock()
         logger.info(f"PhotoStorage initialized: {self.base_dir}")
+
+    def _normalize_path(self, path: str) -> Path:
+        """
+        规范化路径，兼容 Windows (D:\\...) 和 WSL (/mnt/d/...) 格式。
+        在 WSL 环境下:
+          D:\\path 或 D:/path -> /mnt/d/path
+        """
+        import subprocess
+        p = Path(path)
+        # 如果路径已经可以正常访问，直接返回
+        if p.exists():
+            return p
+        # 尝试 WSL 路径转换
+        try:
+            result = subprocess.run(
+                ["wsl", "wslpath", "-w", path],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0:
+                win_path = result.stdout.strip()
+                return Path(win_path)
+        except Exception:
+            pass
+        return p
+
+    def _to_fs_path(self, relative_path: str) -> Path:
+        """
+        将 manifest.json 中的相对路径转换为实际文件系统路径。
+        处理 Windows (D:\\...) 和 Unix (/mnt/d/...) 格式。
+        """
+        # 先把 Windows 反斜杠统一成正斜杠
+        normalized = relative_path.replace("\\", "/")
+        return self.base_dir / normalized
 
     def _load_manifest(self) -> dict:
         """加载 manifest 文件"""
@@ -194,7 +231,7 @@ class PhotoStorage:
         # 优先从 manifest 获取信息（包含 original_name）
         for original_name, info in manifest.items():
             saved_path = info.get("saved_path", "")
-            full_path = self.base_dir / saved_path
+            full_path = self._to_fs_path(saved_path)
             if full_path.exists():
                 files[original_name] = {
                     "size": info.get("size", 0),
@@ -384,3 +421,159 @@ class PhotoStorage:
             removed.append(str(meta_path))
 
         return {"removed": removed}
+
+    # ==================== 缩略图相关 ====================
+
+    def _get_thumbs_dir(self) -> Path:
+        """获取缩略图缓存目录"""
+        thumbs_dir = self.base_dir / "_thumbs"
+        thumbs_dir.mkdir(parents=True, exist_ok=True)
+        return thumbs_dir
+
+    def _get_thumb_path(self, original_path: str) -> Path:
+        """根据原始文件路径获取缩略图路径"""
+        thumb_id = hashlib.md5(original_path.encode("utf-8")).hexdigest()
+        return self._get_thumbs_dir() / f"{thumb_id}.jpg"
+
+    def _generate_image_thumbnail(self, full_path: Path, thumb_path: Path, max_width: int = 800) -> dict:
+        """Generate thumbnail for image files using PIL"""
+        from PIL import Image
+        with Image.open(full_path) as img:
+            if img.mode in ("RGBA", "P", "LA", "PA"):
+                img = img.convert("RGB")
+            w, h = img.size
+            if w > max_width:
+                ratio = max_width / w
+                new_w = max_width
+                new_h = int(h * ratio)
+                img = img.resize((new_w, new_h), Image.LANCZOS)
+            else:
+                new_w, new_h = w, h
+            img.save(thumb_path, "JPEG", quality=85, optimize=True)
+        return {"width": new_w, "height": new_h}
+
+    def _generate_video_thumbnail(self, full_path: Path, thumb_path: Path, max_width: int = 800) -> dict:
+        """Generate thumbnail for video files by extracting the first frame using imageio"""
+        import imageio.v3 as iio
+        from PIL import Image
+        import numpy as np
+        # Extract first frame (frame at index 0)
+        frame = iio.imread(full_path, plugin="pyav", index=0)
+        # imageio returns HWC numpy array, convert to RGB if needed
+        if frame.ndim == 2:
+            frame = np.stack([frame] * 3, axis=-1)
+        elif frame.shape[-1] == 4:
+            frame = frame[:, :, :3]
+        img = Image.fromarray(frame)
+        w, h = img.size
+        if w > max_width:
+            ratio = max_width / w
+            new_w = max_width
+            new_h = int(h * ratio)
+            img = img.resize((new_w, new_h), Image.LANCZOS)
+        else:
+            new_w, new_h = w, h
+        img.save(thumb_path, "JPEG", quality=85, optimize=True)
+        return {"width": new_w, "height": new_h}
+
+    def generate_thumbnail(self, original_path: str, max_width: int = 800) -> dict:
+        """
+        生成缩略图（如果已存在则直接返回）
+        Returns: {thumb_path, width, height, cached}
+        """
+        thumb_path = self._get_thumb_path(original_path)
+
+        # 已缓存
+        if thumb_path.exists():
+            return {
+                "thumb_path": str(thumb_path),
+                "cached": True,
+                "width": None,
+                "height": None,
+            }
+
+        # 尝试生成缩略图
+        full_path = self._to_fs_path(original_path)
+        if not full_path.exists():
+            raise FileNotFoundError(f"Original file not found: {original_path}")
+
+        ext = Path(original_path).suffix.lower()
+        if ext in VIDEO_EXTS:
+            result = self._generate_video_thumbnail(full_path, thumb_path, max_width)
+            logger.info(f"Video thumbnail generated: {original_path} -> {thumb_path.name}")
+        elif ext in THUMB_SUPPORTED_EXTS:
+            result = self._generate_image_thumbnail(full_path, thumb_path, max_width)
+            logger.info(f"Image thumbnail generated: {original_path} -> {thumb_path.name}")
+        else:
+            raise ValueError(f"Unsupported thumbnail format: {ext}")
+
+        return {
+                "thumb_path": str(thumb_path),
+                "cached": False,
+                "width": result.get("width"),
+                "height": result.get("height"),
+            }
+
+    def get_thumb_id(self, original_path: str) -> str:
+        """获取缩略图的文件ID（用于 URL）"""
+        return hashlib.md5(original_path.encode("utf-8")).hexdigest()
+
+    def get_gallery_list(self) -> dict:
+        """
+        获取所有照片列表，按日期分组
+        直接扫描文件系统，不依赖 manifest（manifest 的 saved_path 在 WSL 下可能有路径不兼容问题）
+        Returns: {groups: [{date, photos: [{id, name, path, size, type}]}]}
+        """
+        groups = {}  # date -> photos
+
+        # 遍历 base_dir 下的所有年/月/日 子目录
+        for year_dir in sorted(self.base_dir.iterdir(), reverse=True):
+            if not year_dir.is_dir() or not year_dir.name.isdigit():
+                continue
+            for month_dir in sorted(year_dir.iterdir(), reverse=True):
+                if not month_dir.is_dir() or not month_dir.name.isdigit():
+                    continue
+                for day_dir in sorted(month_dir.iterdir(), reverse=True):
+                    if not day_dir.is_dir() or not day_dir.name.isdigit():
+                        continue
+
+                    date_str = f"{year_dir.name}-{month_dir.name}-{day_dir.name}"
+                    date_key = f"{year_dir.name}/{month_dir.name}/{day_dir.name}"
+
+                    for photo_file in day_dir.iterdir():
+                        # 跳过内部目录
+                        if photo_file.is_dir() or photo_file.name in ("_thumbs", "_partial"):
+                            continue
+                        ext = photo_file.suffix.lower()
+                        if ext not in IMAGE_EXTS and ext not in VIDEO_EXTS:
+                            continue
+
+                        file_type = "video" if ext in VIDEO_EXTS else "image"
+                        try:
+                            size = photo_file.stat().st_size
+                        except OSError:
+                            size = 0
+
+                        photo_entry = {
+                            "id": self.get_thumb_id(date_key + "/" + photo_file.name),
+                            "name": photo_file.name,
+                            "path": f"{date_key}/{photo_file.name}",
+                            "size": size,
+                            "type": file_type,
+                        }
+
+                        if date_str not in groups:
+                            groups[date_str] = []
+                        groups[date_str].append(photo_entry)
+
+        # 转换为列表并按日期降序排序
+        result = []
+        for date in sorted(groups.keys(), reverse=True):
+            result.append({
+                "date": date,
+                "photos": groups[date],
+            })
+
+        total = sum(len(g["photos"]) for g in result)
+        return {"groups": result, "total_count": total}
+

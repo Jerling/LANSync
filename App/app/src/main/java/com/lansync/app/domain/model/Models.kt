@@ -184,6 +184,36 @@ data class ResumeStatusData(
     @SerializedName("original_name") val originalName: String?
 )
 
+// ==================== 云相册相关 ====================
+
+/**
+ * 云相册照片条目
+ */
+data class GalleryPhoto(
+    val id: String,
+    val name: String,
+    val path: String,
+    val size: Long,
+    val type: String  // "image" or "video"
+)
+
+/**
+ * 按日期分组的云相册数据
+ */
+data class GalleryGroup(
+    val date: String,
+    val photos: List<GalleryPhoto>
+)
+
+/**
+ * 云相册列表响应
+ */
+data class GalleryListResponse(
+    val success: Boolean,
+    val groups: List<GalleryGroup>,
+    @SerializedName("total_count") val totalCount: Int
+)
+
 /**
  * 照片文件
  */

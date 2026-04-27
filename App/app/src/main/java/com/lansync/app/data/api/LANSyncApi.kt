@@ -76,4 +76,10 @@ interface LANSyncApi {
      */
     @GET("api/upload/resume/status")
     suspend fun resumeStatus(@Query("file_id") fileId: String): Response<ResumeStatusResponse>
+
+    /**
+     * 获取云相册照片列表
+     */
+    @GET("api/gallery/list")
+    suspend fun getGalleryList(): Response<GalleryListResponse>
 }

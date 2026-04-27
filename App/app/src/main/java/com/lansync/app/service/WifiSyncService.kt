@@ -35,12 +35,26 @@ class WifiSyncService : Service() {
     private val _syncState = MutableStateFlow<SyncState>(SyncState.Idle)
     val syncState: StateFlow<SyncState> = _syncState.asStateFlow()
 
+    // Service → ViewModel 事件通道（进程内 SharedFlow）
+    // 注册到 companion object 的_currentInstance，HomeViewModel 通过静态属性访问
+    private val _syncStateChannel = MutableSharedFlow<SyncState>(replay = 1)
+    val syncStateChannel: SharedFlow<SyncState> = _syncStateChannel.asSharedFlow()
+
     companion object {
         private const val NOTIFICATION_ID = 1001
         private const val CHANNEL_ID = "wifi_sync_channel"
 
+        // 当前运行中的 Service 实例（单例，通过它访问实例级 syncStateChannel）
+        var currentInstance: WifiSyncService? = null
+            private set
+
         const val ACTION_START_SYNC = "com.lansync.app.START_SYNC"
         const val ACTION_STOP_SYNC = "com.lansync.app.STOP_SYNC"
+
+        // 静态访问器，兼容 HomeViewModel 的调用方式
+        val syncStateChannel: SharedFlow<SyncState>
+            get() = currentInstance?._syncStateChannel
+                ?: MutableSharedFlow<SyncState>(replay = 1)
 
         fun startService(context: Context) {
             val intent = Intent(context, WifiSyncService::class.java).apply {
@@ -59,15 +73,12 @@ class WifiSyncService : Service() {
             }
             context.startService(intent)
         }
-
-        // Service → ViewModel 事件通道（进程内 SharedFlow，非 Android LocalBroadcast）
-        private val _syncStateChannel = MutableSharedFlow<SyncState>(replay = 1)
-        val syncStateChannel: SharedFlow<SyncState> = _syncStateChannel.asSharedFlow()
     }
 
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+        currentInstance = this
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -89,6 +100,7 @@ class WifiSyncService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        currentInstance = null
         serviceScope.cancel()
     }
 
