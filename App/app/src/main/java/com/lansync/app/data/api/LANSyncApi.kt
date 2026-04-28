@@ -39,6 +39,12 @@ interface LANSyncApi {
     suspend fun checkFiles(@Body request: CheckFilesRequest): Response<CheckFilesResponse>
 
     /**
+     * 基于 name+size 快速检查文件是否存在（不计算哈希，适合首次快速过滤）
+     */
+    @POST("api/sync/check-by-names")
+    suspend fun checkFilesByNames(@Body request: CheckByNamesRequest): Response<CheckByNamesResponse>
+
+    /**
      * 上传单张照片/视频
      */
     @Multipart

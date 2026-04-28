@@ -85,7 +85,10 @@ class WifiSyncService : Service() {
         when (intent?.action) {
             ACTION_START_SYNC -> {
                 startForeground(NOTIFICATION_ID, createNotification("同步服务运行中"))
+                // 立即 emit Scanning，避免 isServiceRunning=true 但状态文字停留在"空闲"
+                _syncState.value = SyncState.Scanning
                 serviceScope.launch {
+                    _syncStateChannel.emit(SyncState.Scanning)
                     performSync()
                 }
             }
@@ -160,8 +163,9 @@ class WifiSyncService : Service() {
             android.util.Log.d("WifiSyncService", "performSync: scanned ${photos.size} photos")
 
             if (photos.isEmpty()) {
-                _syncState.value = SyncState.Completed
+                _syncState.value = SyncState.AllSynced
                 updateNotification("没有新照片需要同步")
+                stopSelf()
                 return
             }
 
@@ -184,7 +188,10 @@ class WifiSyncService : Service() {
                                 updateNotification("同步中: ${state.current}/${state.total}")
                             }
                             is SyncState.Completed -> {
-                                updateNotification("同步完成: ${photos.size} 个文件")
+                                updateNotification("同步完成")
+                            }
+                            is SyncState.AllSynced -> {
+                                updateNotification("全部照片已同步，无需上传")
                             }
                             is SyncState.Error -> {
                                 updateNotification(state.message)
@@ -199,6 +206,8 @@ class WifiSyncService : Service() {
                 android.util.Log.e("WifiSyncService", "Flow collection failed", e)
                 _syncState.value = SyncState.Error("同步异常: ${e.message}")
                 updateNotification("同步异常")
+            } finally {
+                // 无论成功、全部已同步还是出错，flow 结束后都停止服务
                 stopSelf()
             }
         } catch (e: Exception) {

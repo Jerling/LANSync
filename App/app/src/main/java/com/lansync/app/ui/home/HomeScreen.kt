@@ -189,6 +189,11 @@ fun HomeScreen(
                             MaterialTheme.colorScheme.primary,
                             "同步完成"
                         )
+                        is SyncState.AllSynced -> Triple(
+                            Icons.Default.CheckCircle,
+                            MaterialTheme.colorScheme.primary,
+                            "全部已同步"
+                        )
                         is SyncState.Error -> Triple(
                             Icons.Default.Error,
                             MaterialTheme.colorScheme.error,

@@ -101,6 +101,22 @@ class SyncRepository @Inject constructor(
         }
     }
 
+    /**
+     * 基于 name+size 快速检查文件是否存在于服务器（不计算哈希，一次网络往返）
+     */
+    suspend fun checkFilesByNamesOnServer(items: List<FileNameSizeItem>): Result<Map<String, Boolean>> {
+        return try {
+            val response = api.checkFilesByNames(CheckByNamesRequest(items))
+            if (response.isSuccessful && response.body() != null) {
+                Result.success(response.body()!!.results)
+            } else {
+                Result.failure(Exception("Failed to check files by names"))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     suspend fun healthCheck(): Result<HealthResponse> {
         return try {
             val response = api.healthCheck()

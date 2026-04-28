@@ -109,6 +109,29 @@ data class CheckFilesResponse(
 )
 
 /**
+ * 基于 name+size 快速检查文件请求（不计算哈希）
+ */
+data class CheckByNamesRequest(
+    val files: List<FileNameSizeItem>
+)
+
+/**
+ * 基于 name+size 快速检查文件响应
+ */
+data class CheckByNamesResponse(
+    val success: Boolean,
+    val results: Map<String, Boolean>  // key: "name_size", value: exists
+)
+
+/**
+ * name+size 查询项
+ */
+data class FileNameSizeItem(
+    val name: String,
+    val size: Long
+)
+
+/**
  * 文件元数据
  */
 data class FileMetadata(
@@ -315,4 +338,6 @@ sealed class SyncState {
     data class Progress(val current: Int, val total: Int) : SyncState()
     object Completed : SyncState()
     data class Error(val message: String, val failedFileNames: List<String> = emptyList()) : SyncState()
+    /** 本地没有照片需要同步（区别于 Completed，用于 UI 明确提示） */
+    object AllSynced : SyncState()
 }

@@ -226,15 +226,29 @@ def setup_routes(app, photo_storage: PhotoStorage, config: dict):
                     results[file_hash or f"{name}_{size}"] = {"exists": False}
                 continue
 
-            # 新格式: manifest[hash] -> [entries list]
-            entries = manifest.get(file_hash, [])
-            if entries:
+            # 新格式: manifest[hash] -> dict (单个文件信息，不是列表)
+            # 注意: manifest.get(hash, []) 返回空 dict {} 时，if dict 是 truthy！
+            #     但旧代码用 entries[0] 期望列表格式，会导致 KeyError
+            #     当前实际存储是 dict，直接取值即可
+            if file_hash in manifest:
+                entry = manifest[file_hash]
                 results[file_hash] = {
                     "exists": True,
-                    "server_name": entries[0].get("original_name", "")
+                    "server_name": entry.get("original_name", "") if isinstance(entry, dict) else ""
                 }
             else:
-                results[file_hash] = {"exists": False}
+                # hash 不在 manifest，降级用 name+size 查找
+                name_size_index = manifest.get("__index__", {})
+                key = (name, size)
+                matched_hash = name_size_index.get(key) if isinstance(name_size_index, dict) else None
+                if matched_hash and matched_hash in manifest:
+                    entry = manifest[matched_hash]
+                    results[file_hash] = {
+                        "exists": True,
+                        "server_name": entry.get("original_name", name) if isinstance(entry, dict) else name
+                    }
+                else:
+                    results[file_hash] = {"exists": False}
 
         return jsonify({"success": True, "results": results})
 
