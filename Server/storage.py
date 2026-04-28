@@ -658,16 +658,13 @@ class PhotoStorage:
                 continue
 
             # 2. 从 manifest 中移除（按 saved_path 匹配）
+            # manifest 格式: {hash: entry_dict}，entry_dict 含 saved_path
             removed = False
-            for hash_key, entries in list(manifest.items()):
+            for hash_key, entry in list(manifest.items()):
                 if len(hash_key) != 64:
                     continue
-                new_entries = [e for e in entries if e.get("saved_path") != rel_path]
-                if len(new_entries) < len(entries):
-                    if new_entries:
-                        manifest[hash_key] = new_entries
-                    else:
-                        del manifest[hash_key]
+                if isinstance(entry, dict) and entry.get("saved_path") == rel_path:
+                    del manifest[hash_key]
                     removed = True
             if not removed:
                 logger.warning(f"File {rel_path} not found in manifest, already deleted?")
@@ -712,23 +709,22 @@ class PhotoStorage:
         logger.info(f"Renamed: {old_full} -> {new_full}")
 
         # 更新 manifest（按 saved_path 匹配）
+        # manifest 格式: {hash: entry_dict}，不再需要遍历 entries 列表
         manifest = self._load_manifest()
         updated = False
-        for hash_key, entries in list(manifest.items()):
+        for hash_key, entry in list(manifest.items()):
             if len(hash_key) != 64:
                 continue
-            for i, e in enumerate(entries):
-                if e.get("saved_path") == old_path:
-                    e["saved_name"] = new_name_safe
-                    e["original_name"] = new_name_safe
-                    # 更新 saved_path
-                    new_rel = str(new_full.relative_to(self.base_dir))
-                    e["saved_path"] = new_rel
-                    entries[i] = e
-                    manifest[hash_key] = entries
-                    updated = True
-                    logger.info(f"Manifest updated for hash {hash_key[:16]}...")
-                    break
+            if isinstance(entry, dict) and entry.get("saved_path") == old_path:
+                entry["saved_name"] = new_name_safe
+                entry["original_name"] = new_name_safe
+                # 更新 saved_path
+                new_rel = str(new_full.relative_to(self.base_dir))
+                entry["saved_path"] = new_rel
+                manifest[hash_key] = entry
+                updated = True
+                logger.info(f"Manifest updated for hash {hash_key[:16]}...")
+                break
 
         if updated:
             self._save_manifest(manifest)

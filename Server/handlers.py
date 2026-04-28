@@ -156,6 +156,41 @@ def setup_routes(app, photo_storage: PhotoStorage, config: dict):
         files = photo_storage.list_existing_files()
         return jsonify({"success": True, "count": len(files) - 1, "files": files})
 
+    @app.route("/api/sync/check-by-names", methods=["POST"])
+    @auth_required
+    def check_files_by_names():
+        """基于 name+size 快速检查文件是否存在（不计算哈希，适合首次过滤）
+
+        请求体: { "files": [ { "name": "xxx.jpg", "size": 1234 }, ... ] }
+        响应:   { "success": true, "results": { "xxx.jpg_1234": true/false } }
+        """
+        data = request.get_json()
+        if not data or "files" not in data:
+            return jsonify({"error": "files list required"}), 400
+
+        files = data["files"]
+        # 加载 manifest 并构建内存中的 (name, size) -> hash 反向索引
+        manifest = photo_storage._load_manifest()
+        name_size_index = {}
+        for hash_key, entries in manifest.items():
+            if not isinstance(hash_key, str) or len(hash_key) != 64:
+                continue
+            entry = entries[0] if isinstance(entries, list) and entries else entries
+            if not isinstance(entry, dict):
+                continue
+            original_name = entry.get("original_name", "")
+            size = entry.get("size", 0)
+            name_size_index[(original_name, size)] = hash_key
+
+        results = {}
+        for item in files:
+            name = item.get("name", "")
+            size = item.get("size", 0)
+            key = (name, size)
+            results[f"{name}_{size}"] = key in name_size_index
+
+        return jsonify({"success": True, "results": results})
+
     @app.route("/api/sync/check", methods=["POST"])
     @auth_required
     def check_files():
