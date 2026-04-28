@@ -63,12 +63,48 @@ class PhotoStorage:
         return self.base_dir / normalized
 
     def _load_manifest(self) -> dict:
-        """加载 manifest 文件"""
+        """加载 manifest 文件（自动迁移旧格式）"""
         if not self._manifest_path.exists():
             return {}
         try:
             with open(self._manifest_path, "r", encoding="utf-8") as f:
-                return json.load(f)
+                manifest = json.load(f)
+
+            # 检查是否需要迁移旧格式（key 为 original_name，非 SHA256）
+            needs_migration = False
+            for key in manifest.keys():
+                if len(key) != 64:  # 非 SHA256 key，说明是旧格式
+                    needs_migration = True
+                    break
+
+            if needs_migration:
+                logger.info("Migrating manifest from original_name key to SHA256 key format...")
+                new_manifest = {}
+                for old_key, info in manifest.items():
+                    # 已经64位sha的key直接保留
+                    if len(old_key) == 64:
+                        new_manifest[old_key] = info
+                    else:
+                        # 旧格式：key 是 original_name，需要重新计算哈希
+                        saved_path = info.get("saved_path", "")
+                        full_path = self._to_fs_path(saved_path)
+                        if full_path.exists():
+                            try:
+                                hash_val = self._compute_sha256_stream(full_path)
+                                info["original_name"] = old_key  # 确保 original_name 字段存在
+                                info["hash"] = hash_val
+                                new_manifest[hash_val] = info
+                                logger.info(f"  Migrated: {old_key} -> {hash_val[:16]}...")
+                            except Exception as e:
+                                logger.warning(f"  Failed to migrate {old_key}: {e}, keeping as-is")
+                                new_manifest[old_key] = info
+                        else:
+                            logger.warning(f"  Skipping missing file: {saved_path}")
+                manifest = new_manifest
+                self._save_manifest(manifest)
+                logger.info("Manifest migration completed")
+
+            return manifest
         except Exception as e:
             logger.warning(f"Failed to load manifest: {e}")
             return {}
@@ -133,6 +169,18 @@ class PhotoStorage:
         date_path.mkdir(parents=True, exist_ok=True)
         return date_path
 
+    def _compute_sha256(self, data: bytes) -> str:
+        """计算二进制数据的 SHA256 哈希（十六进制字符串）"""
+        return hashlib.sha256(data).hexdigest()
+
+    def _compute_sha256_stream(self, file_path: Path) -> str:
+        """流式计算文件 SHA256（避免大文件内存问题）"""
+        sha = hashlib.sha256()
+        with open(file_path, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                sha.update(chunk)
+        return sha.hexdigest()
+
     def save_photo(self, file_data: bytes, original_name: str, timestamp: int = None) -> dict:
         """
         保存照片/视频文件
@@ -149,6 +197,29 @@ class PhotoStorage:
         ext = Path(original_name).suffix.lower()
         if ext not in SUPPORTED_EXTS:
             raise ValueError(f"Unsupported file type: {ext}")
+
+        # 计算文件内容的 SHA256（用于内容去重）
+        file_hash = self._compute_sha256(file_data)
+        file_size = len(file_data)
+
+        # 加载 manifest，检查是否已有同哈希的文件（内容去重）
+        manifest = self._load_manifest()
+        # 新格式: manifest[hash] -> [entries list]（支持同哈希多文件场景）
+        existing_list = manifest.get(file_hash, [])
+        if existing_list:
+            # 内容已存在，视为成功（幂等上传），返回第一条记录
+            existing_by_hash = existing_list[0]
+            logger.info(f"File {original_name} already exists (hash={file_hash[:16]}...), skipping duplicate save")
+            return {
+                "original_name": original_name,
+                "saved_name": existing_by_hash.get("saved_name", original_name),
+                "path": existing_by_hash.get("saved_path", ""),
+                "size": existing_by_hash.get("size", file_size),
+                "timestamp": timestamp,
+                "type": existing_by_hash.get("type", ("video" if ext in VIDEO_EXTS else "image")),
+                "skipped": True,
+                "hash": file_hash
+            }
 
         # 根据文件名解析拍摄日期，确定目录
         date_path = self.get_date_path_from_name(original_name)
@@ -170,30 +241,34 @@ class PhotoStorage:
         with open(file_path, "wb") as f:
             f.write(file_data)
 
-        file_size = file_path.stat().st_size
+        actual_size = file_path.stat().st_size
         relative_path = str(file_path.relative_to(self.base_dir))
 
         # 判断文件类型
         file_type = "video" if ext in VIDEO_EXTS else "image"
 
-        # 记录到 manifest（用 original_name 作为 key）
-        manifest = self._load_manifest()
-        manifest[original_name] = {
+        # 用 SHA256 作为 manifest key（内容去重），value 为列表支持同哈希多文件
+        if file_hash not in manifest:
+            manifest[file_hash] = []
+        manifest[file_hash].append({
+            "original_name": original_name,
             "saved_name": file_path.name,
-            "size": file_size,
+            "size": actual_size,
             "type": file_type,
             "timestamp": timestamp,
-            "saved_path": relative_path
-        }
+            "saved_path": relative_path,
+            "hash": file_hash
+        })
         self._save_manifest(manifest)
 
         return {
             "original_name": original_name,
             "saved_name": file_path.name,
             "path": relative_path,
-            "size": file_size,
+            "size": actual_size,
             "timestamp": timestamp,
-            "type": file_type
+            "type": file_type,
+            "hash": file_hash
         }
     
     def get_storage_stats(self) -> dict:
@@ -224,28 +299,39 @@ class PhotoStorage:
         }
 
     def list_existing_files(self) -> dict:
-        """列出所有已存储的文件（用于增量同步），返回 original_name -> {size, mtime}"""
+        """列出所有已存储的文件（用于增量同步），返回 hash -> {original_name, size, mtime, saved_path}
+
+        Manifest 格式为 {hash: [entries list]}（支持同哈希多文件），这里只返回第一个 entry 的基本信息。
+        同时构建 (name, size) -> hash 的反向索引，供 name+size 查询用。
+        """
         manifest = self._load_manifest()
         files = {}
+        # 反向索引: (original_name, size) -> hash，用于 name+size 快速查询
+        name_size_index = {}
 
-        # 优先从 manifest 获取信息（包含 original_name）
-        for original_name, info in manifest.items():
+        for hash_key, entries in manifest.items():
+            # 跳过非哈希的旧 key（兼容 manifest 中仍存在的 original_name key）
+            if len(hash_key) != 64:
+                continue
+            # entries 是列表，取第一个 entry
+            info = entries[0] if entries else {}
+            original_name = info.get("original_name", "")
+            size = info.get("size", 0)
             saved_path = info.get("saved_path", "")
             full_path = self._to_fs_path(saved_path)
-            if full_path.exists():
-                files[original_name] = {
-                    "size": info.get("size", 0),
-                    "mtime": full_path.stat().st_mtime,
-                    "saved_path": saved_path
-                }
-            else:
-                # 文件被删除了，从 manifest 标记但文件不在
-                files[original_name] = {
-                    "size": info.get("size", 0),
-                    "mtime": 0,
-                    "saved_path": saved_path
-                }
+            mtime = full_path.stat().st_mtime if full_path.exists() else 0
 
+            files[hash_key] = {
+                "original_name": original_name,
+                "size": size,
+                "mtime": mtime,
+                "saved_path": saved_path
+            }
+            # 建立反向索引
+            name_size_index[(original_name, size)] = hash_key
+
+        # 将反向索引也放入返回值，key 为特殊前缀以区分
+        files["__index__"] = name_size_index
         return files
 
     # ==================== 分片续传相关 ====================
@@ -359,14 +445,36 @@ class PhotoStorage:
         file_size = final_path.stat().st_size
         relative_path = str(final_path.relative_to(self.base_dir))
 
-        # 记录到 manifest
+        # 计算内容哈希（流式，避免大文件内存问题）
+        file_hash = self._compute_sha256_stream(final_path)
+
+        # 内容去重：检查是否已有同哈希文件
         manifest = self._load_manifest()
-        manifest[original_name] = {
+        existing = manifest.get(file_hash)
+        if existing:
+            # 内容已存在，删除刚写入的文件，视为幂等成功
+            final_path.unlink()
+            logger.info(f"Complete partial: {original_name} already exists (hash={file_hash[:16]}...), skipping")
+            return {
+                "original_name": original_name,
+                "saved_name": existing.get("saved_name", original_name),
+                "path": existing.get("saved_path", ""),
+                "size": existing.get("size", file_size),
+                "timestamp": timestamp,
+                "type": existing.get("type", file_type),
+                "skipped": True,
+                "hash": file_hash
+            }
+
+        # 记录到 manifest（用 SHA256 作为 key）
+        manifest[file_hash] = {
+            "original_name": original_name,
             "saved_name": final_path.name,
             "size": file_size,
             "type": file_type,
             "timestamp": timestamp,
-            "saved_path": relative_path
+            "saved_path": relative_path,
+            "hash": file_hash
         }
         self._save_manifest(manifest)
 
@@ -376,7 +484,8 @@ class PhotoStorage:
             "path": relative_path,
             "size": file_size,
             "timestamp": timestamp,
-            "type": file_type
+            "type": file_type,
+            "hash": file_hash
         }
 
     def get_partial_status(self, file_id: str) -> dict:
@@ -517,6 +626,127 @@ class PhotoStorage:
     def get_thumb_id(self, original_path: str) -> str:
         """获取缩略图的文件ID（用于 URL）"""
         return hashlib.md5(original_path.encode("utf-8")).hexdigest()
+
+    # ==================== 删除 & 重命名 ====================
+
+    def delete_photos(self, paths: list) -> dict:
+        """
+        删除指定路径的照片文件及其缩略图，同时从 manifest 中移除记录。
+
+        Args:
+            paths: 要删除的文件相对路径列表，如 ["2026/04/26/IMG.jpg", "2026/04/27/VID.mp4"]
+
+        Returns:
+            {"deleted": [路径列表], "failed": [{"path": 路径, "reason": 原因}]}
+        """
+        manifest = self._load_manifest()
+        deleted = []
+        failed = []
+
+        for rel_path in paths:
+            # 1. 找文件并删除
+            full_path = self._to_fs_path(rel_path)
+            thumb_path = self._get_thumb_path(rel_path)
+            try:
+                if full_path.exists():
+                    full_path.unlink()
+                if thumb_path.exists():
+                    thumb_path.unlink()
+                deleted.append(rel_path)
+            except Exception as e:
+                failed.append({"path": rel_path, "reason": str(e)})
+                continue
+
+            # 2. 从 manifest 中移除（按 saved_path 匹配）
+            removed = False
+            for hash_key, entries in list(manifest.items()):
+                if len(hash_key) != 64:
+                    continue
+                new_entries = [e for e in entries if e.get("saved_path") != rel_path]
+                if len(new_entries) < len(entries):
+                    if new_entries:
+                        manifest[hash_key] = new_entries
+                    else:
+                        del manifest[hash_key]
+                    removed = True
+            if not removed:
+                logger.warning(f"File {rel_path} not found in manifest, already deleted?")
+
+        self._save_manifest(manifest)
+        logger.info(f"Deleted {len(deleted)} files, {len(failed)} failed")
+        return {"deleted": deleted, "failed": failed}
+
+    def rename_photo(self, old_path: str, new_name: str) -> dict:
+        """
+        重命名照片文件，更新 manifest 和缩略图。
+
+        Args:
+            old_path: 原相对路径，如 "2026/04/26/IMG.jpg"
+            new_name: 新文件名（不含路径），如 "NEW_NAME.jpg"
+
+        Returns:
+            {"old_path": 原路径, "new_path": 新路径, "new_id": 新md5(id)}
+        """
+        import re as re_module
+        old_full = self._to_fs_path(old_path)
+        if not old_full.exists():
+            raise FileNotFoundError(f"File not found: {old_path}")
+
+        ext = Path(old_full).suffix.lower()
+        if not re_module.match(r'^[\w\-\.]+$', new_name):
+            raise ValueError("Invalid filename: only alphanumeric, dash, underscore, dot allowed")
+
+        new_name_safe = secure_filename(new_name)
+        if Path(new_name_safe).suffix.lower() != ext:
+            new_name_safe = new_name_safe + ext
+
+        # 新路径 = 同一目录 + 新文件名
+        parent_dir = old_full.parent
+        new_full = parent_dir / new_name_safe
+
+        if new_full.exists():
+            raise FileExistsError(f"Target file already exists: {new_name_safe}")
+
+        # 重命名磁盘文件
+        old_full.rename(new_full)
+        logger.info(f"Renamed: {old_full} -> {new_full}")
+
+        # 更新 manifest（按 saved_path 匹配）
+        manifest = self._load_manifest()
+        updated = False
+        for hash_key, entries in list(manifest.items()):
+            if len(hash_key) != 64:
+                continue
+            for i, e in enumerate(entries):
+                if e.get("saved_path") == old_path:
+                    e["saved_name"] = new_name_safe
+                    e["original_name"] = new_name_safe
+                    # 更新 saved_path
+                    new_rel = str(new_full.relative_to(self.base_dir))
+                    e["saved_path"] = new_rel
+                    entries[i] = e
+                    manifest[hash_key] = entries
+                    updated = True
+                    logger.info(f"Manifest updated for hash {hash_key[:16]}...")
+                    break
+
+        if updated:
+            self._save_manifest(manifest)
+        else:
+            logger.warning(f"Path {old_path} not found in manifest")
+
+        # 删除旧缩略图（基于 old_path 的 md5）
+        old_thumb = self._get_thumb_path(old_path)
+        if old_thumb.exists():
+            old_thumb.unlink()
+
+        # 返回新路径及新 id
+        new_rel_path = str(new_full.relative_to(self.base_dir))
+        return {
+            "old_path": old_path,
+            "new_path": new_rel_path,
+            "new_id": self.get_thumb_id(new_rel_path)
+        }
 
     def get_gallery_list(self) -> dict:
         """

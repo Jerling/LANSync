@@ -76,11 +76,45 @@ data class ExistingFilesResponse(
 )
 
 /**
+ * 文件检查项（用于批量查询）
+ */
+data class FileCheckItem(
+    val name: String,
+    val size: Long,
+    val hash: String
+)
+
+/**
+ * 单个文件的检查结果
+ */
+data class FileCheckResult(
+    val exists: Boolean,
+    @SerializedName("server_name")
+    val serverName: String? = null
+)
+
+/**
+ * 批量检查文件请求
+ */
+data class CheckFilesRequest(
+    val files: List<FileCheckItem>
+)
+
+/**
+ * 批量检查文件响应
+ */
+data class CheckFilesResponse(
+    val success: Boolean,
+    val results: Map<String, FileCheckResult>
+)
+
+/**
  * 文件元数据
  */
 data class FileMetadata(
     val size: Long,
-    val mtime: Double
+    val mtime: Double,
+    val originalName: String? = null
 )
 
 /**
@@ -101,7 +135,8 @@ data class UploadData(
     @SerializedName("saved_path")
     val savedPath: String,
     val size: Long,
-    val type: String  // "image" or "video"
+    val type: String,  // "image" or "video"
+    val hash: String = ""  // SHA256 from server
 )
 
 /**
@@ -214,6 +249,47 @@ data class GalleryListResponse(
     @SerializedName("total_count") val totalCount: Int
 )
 
+// ==================== 云相册批量操作 ====================
+
+/**
+ * 批量删除请求
+ */
+data class DeletePhotosRequest(
+    val paths: List<String>
+)
+
+/**
+ * 批量删除响应
+ */
+data class DeletePhotosResponse(
+    val success: Boolean,
+    val deleted: List<String>,
+    val failed: List<FailedItem>
+)
+
+data class FailedItem(
+    val path: String,
+    val reason: String
+)
+
+/**
+ * 重命名请求
+ */
+data class RenamePhotoRequest(
+    val path: String,
+    @SerializedName("new_name") val newName: String
+)
+
+/**
+ * 重命名响应
+ */
+data class RenamePhotoResponse(
+    val success: Boolean,
+    @SerializedName("old_path") val oldPath: String,
+    @SerializedName("new_path") val newPath: String,
+    @SerializedName("new_id") val newId: String
+)
+
 /**
  * 照片文件
  */
@@ -224,7 +300,8 @@ data class PhotoFile(
     val size: Long,
     val timestamp: Long,
     val isVideo: Boolean,
-    val isUploaded: Boolean = false
+    val isUploaded: Boolean = false,
+    val hash: String = ""  // SHA256，内容去重用
 )
 
 /**

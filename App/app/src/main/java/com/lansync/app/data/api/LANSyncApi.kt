@@ -33,6 +33,12 @@ interface LANSyncApi {
     suspend fun getExistingFiles(): Response<ExistingFilesResponse>
 
     /**
+     * 批量检查文件是否已存在（基于内容哈希）
+     */
+    @POST("api/sync/check")
+    suspend fun checkFiles(@Body request: CheckFilesRequest): Response<CheckFilesResponse>
+
+    /**
      * 上传单张照片/视频
      */
     @Multipart
@@ -82,4 +88,16 @@ interface LANSyncApi {
      */
     @GET("api/gallery/list")
     suspend fun getGalleryList(): Response<GalleryListResponse>
+
+    /**
+     * 批量删除云相册照片
+     */
+    @POST("api/gallery/delete")
+    suspend fun deletePhotos(@Body request: DeletePhotosRequest): Response<DeletePhotosResponse>
+
+    /**
+     * 重命名云相册照片
+     */
+    @POST("api/gallery/rename")
+    suspend fun renamePhoto(@Body request: RenamePhotoRequest): Response<RenamePhotoResponse>
 }

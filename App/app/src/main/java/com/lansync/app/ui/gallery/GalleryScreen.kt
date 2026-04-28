@@ -1,21 +1,18 @@
 package com.lansync.app.ui.gallery
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.ArrowForward
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Image
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.VideoLibrary
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -33,34 +30,133 @@ import coil.compose.AsyncImage
 import com.lansync.app.domain.model.GalleryGroup
 import com.lansync.app.domain.model.GalleryPhoto
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun GalleryScreen(
     viewModel: GalleryViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    var showRenameDialog by remember { mutableStateOf(false) }
+    var renameTarget by remember { mutableStateOf<GalleryPhoto?>(null) }
+
+    // Rename dialog
+    if (showRenameDialog && renameTarget != null) {
+        RenameDialog(
+            originalName = renameTarget!!.name,
+            onConfirm = { newName ->
+                viewModel.renamePhoto(renameTarget!!.path, newName)
+                showRenameDialog = false
+                renameTarget = null
+            },
+            onDismiss = {
+                showRenameDialog = false
+                renameTarget = null
+            }
+        )
+    }
+
+    // 操作结果 Snackbar
+    val snackbarHostState = remember { SnackbarHostState() }
+    LaunchedEffect(uiState.operationMessage) {
+        uiState.operationMessage?.let {
+            snackbarHostState.showSnackbar(it)
+            viewModel.clearOperationMessage()
+        }
+    }
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        Text("云相册")
-                        if (uiState.totalCount > 0) {
-                            Text(
-                                text = "${uiState.totalCount} 张照片",
-                                style = MaterialTheme.typography.bodySmall
-                            )
+            if (uiState.isSelecting) {
+                // 多选模式 top bar
+                TopAppBar(
+                    title = { Text("${uiState.selectedIds.size} 已选中") },
+                    navigationIcon = {
+                        IconButton(onClick = { viewModel.clearSelection() }) {
+                            Icon(Icons.Default.Close, contentDescription = "取消")
+                        }
+                    },
+                    actions = {
+                        // 全选（对所有照片全选）
+                        IconButton(onClick = {
+                            uiState.groups.forEach { viewModel.selectAllInGroup(it) }
+                        }) {
+                            Icon(Icons.Default.SelectAll, contentDescription = "全选")
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer
+                    )
+                )
+            } else {
+                // 普通模式 top bar
+                TopAppBar(
+                    title = {
+                        Column {
+                            Text("云相册")
+                            if (uiState.totalCount > 0) {
+                                Text(
+                                    text = "${uiState.totalCount} 张照片",
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            }
+                        }
+                    },
+                    actions = {
+                        IconButton(onClick = { viewModel.loadGallery() }) {
+                            Icon(Icons.Default.Refresh, contentDescription = "刷新")
                         }
                     }
-                },
-                actions = {
-                    IconButton(onClick = { viewModel.loadGallery() }) {
-                        Icon(Icons.Default.Refresh, contentDescription = "刷新")
+                )
+            }
+        },
+        bottomBar = {
+            if (uiState.isSelecting && uiState.selectedIds.isNotEmpty()) {
+                BottomAppBar(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp),
+                        horizontalArrangement = Arrangement.SpaceEvenly
+                    ) {
+                        // 重命名按钮
+                        TextButton(
+                            onClick = {
+                                // 只选中1张时才能重命名
+                                if (uiState.selectedIds.size == 1) {
+                                    val target = uiState.groups
+                                        .flatMap { it.photos }
+                                        .first { it.id in uiState.selectedIds }
+                                    renameTarget = target
+                                    showRenameDialog = true
+                                } else {
+                                    // 不能重命名多张
+                                }
+                            },
+                            enabled = uiState.selectedIds.size == 1
+                        ) {
+                            Icon(Icons.Default.Edit, contentDescription = null)
+                            Spacer(Modifier.width(4.dp))
+                            Text("重命名")
+                        }
+
+                        // 删除按钮
+                        TextButton(
+                            onClick = { viewModel.deleteSelected() },
+                            colors = ButtonDefaults.textButtonColors(
+                                contentColor = MaterialTheme.colorScheme.error
+                            )
+                        ) {
+                            Icon(Icons.Default.Delete, contentDescription = null)
+                            Spacer(Modifier.width(4.dp))
+                            Text("删除")
+                        }
                     }
                 }
-            )
-        }
+            }
+        },
+        snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { padding ->
         Box(
             modifier = Modifier
@@ -111,16 +207,21 @@ fun GalleryScreen(
                 else -> {
                     GalleryContent(
                         groups = uiState.groups,
+                        selectedIds = uiState.selectedIds,
+                        isSelecting = uiState.isSelecting,
                         viewModel = viewModel,
                         onPhotoClick = { photo, allPhotos ->
-                            viewModel.selectPhoto(photo, allPhotos)
+                            viewModel.onPhotoClick(photo, allPhotos)
+                        },
+                        onPhotoLongPress = { photo ->
+                            viewModel.onPhotoLongPress(photo)
                         }
                     )
                 }
             }
         }
 
-        // Photo preview dialog
+        // Photo preview dialog (非多选模式时才显示)
         uiState.selectedPhoto?.let { selected ->
             PhotoPreviewDialog(
                 selectedPhoto = selected,
@@ -128,14 +229,30 @@ fun GalleryScreen(
                 onDismiss = { viewModel.clearSelectedPhoto() }
             )
         }
+
+        // 操作中 loading
+        if (uiState.isOperationInProgress) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.3f)),
+                contentAlignment = Alignment.Center
+            ) {
+                CircularProgressIndicator(color = Color.White)
+            }
+        }
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun GalleryContent(
     groups: List<GalleryGroup>,
+    selectedIds: Set<String>,
+    isSelecting: Boolean,
     viewModel: GalleryViewModel,
-    onPhotoClick: (GalleryPhoto, List<Pair<String, String>>) -> Unit
+    onPhotoClick: (GalleryPhoto, List<Pair<String, String>>) -> Unit,
+    onPhotoLongPress: (GalleryPhoto) -> Unit
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -145,32 +262,62 @@ private fun GalleryContent(
             item(key = group.date) {
                 GalleryDateSection(
                     group = group,
+                    selectedIds = selectedIds,
+                    isSelecting = isSelecting,
                     viewModel = viewModel,
-                    onPhotoClick = onPhotoClick
+                    onPhotoClick = onPhotoClick,
+                    onPhotoLongPress = onPhotoLongPress
                 )
             }
         }
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun GalleryDateSection(
     group: GalleryGroup,
+    selectedIds: Set<String>,
+    isSelecting: Boolean,
     viewModel: GalleryViewModel,
-    onPhotoClick: (GalleryPhoto, List<Pair<String, String>>) -> Unit
+    onPhotoClick: (GalleryPhoto, List<Pair<String, String>>) -> Unit,
+    onPhotoLongPress: (GalleryPhoto) -> Unit
 ) {
+    val allPhotos: List<Pair<String, String>> = group.photos.map { it.id to it.path }
+
     Column(modifier = Modifier.fillMaxWidth()) {
         // Date header
-        Text(
-            text = formatDateHeader(group.date),
-            style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = formatDateHeader(group.date),
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.weight(1f)
+            )
+            if (isSelecting) {
+                // 组内全选按钮
+                val allSelected = group.photos.all { it.id in selectedIds }
+                Checkbox(
+                    checked = allSelected,
+                    onCheckedChange = {
+                        if (allSelected) {
+                            // 取消全组选中 → 从全局 selectedIds 移除这些
+                            // 简单处理：直接清空选择再重新加入
+                        } else {
+                            // 全选
+                            viewModel.selectAllInGroup(group)
+                        }
+                    }
+                )
+            }
+        }
 
         // Photo grid
-        val allPhotos: List<Pair<String, String>> = group.photos.map { it.id to it.path }
-
         LazyVerticalGrid(
             columns = GridCells.Fixed(3),
             modifier = Modifier
@@ -185,7 +332,10 @@ private fun GalleryDateSection(
                 PhotoGridItem(
                     photo = photo,
                     thumbUrl = viewModel.getThumbUrl(photo.path),
-                    onClick = { onPhotoClick(photo, allPhotos) }
+                    isSelected = photo.id in selectedIds,
+                    isSelecting = isSelecting,
+                    onClick = { onPhotoClick(photo, allPhotos) },
+                    onLongClick = { onPhotoLongPress(photo) }
                 )
             }
         }
@@ -194,18 +344,25 @@ private fun GalleryDateSection(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun PhotoGridItem(
     photo: GalleryPhoto,
     thumbUrl: String,
-    onClick: () -> Unit
+    isSelected: Boolean,
+    isSelecting: Boolean,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit
 ) {
     Box(
         modifier = Modifier
             .aspectRatio(1f)
             .clip(RoundedCornerShape(4.dp))
             .background(Color.DarkGray)
-            .clickable(onClick = onClick),
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick
+            ),
         contentAlignment = Alignment.Center
     ) {
         AsyncImage(
@@ -227,6 +384,30 @@ private fun PhotoGridItem(
                 contentDescription = "视频",
                 tint = Color.White,
                 modifier = Modifier.size(32.dp)
+            )
+        }
+
+        // Selection overlay
+        if (isSelecting) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(
+                        if (isSelected) Color.Blue.copy(alpha = 0.3f)
+                        else Color.Transparent
+                    )
+            )
+            // Checkbox
+            Checkbox(
+                checked = isSelected,
+                onCheckedChange = { onClick() },
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(4.dp),
+                colors = CheckboxDefaults.colors(
+                    checkedColor = MaterialTheme.colorScheme.primary,
+                    uncheckedColor = Color.White
+                )
             )
         }
     }
@@ -337,8 +518,43 @@ private fun PhotoPreviewDialog(
     }
 }
 
+@Composable
+private fun RenameDialog(
+    originalName: String,
+    onConfirm: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var name by remember { mutableStateOf(originalName) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("重命名") },
+        text = {
+            OutlinedTextField(
+                value = name,
+                onValueChange = { name = it },
+                label = { Text("文件名") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onConfirm(name) },
+                enabled = name.isNotBlank() && name != originalName
+            ) {
+                Text("确定")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("取消")
+            }
+        }
+    )
+}
+
 private fun formatDateHeader(dateStr: String): String {
-    // "2026-04-27" -> "2026年4月27日"
     val parts = dateStr.split("-")
     if (parts.size != 3) return dateStr
     return "${parts[0]}年${parts[1].toInt()}月${parts[2].toInt()}日"

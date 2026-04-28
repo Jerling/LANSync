@@ -154,7 +154,54 @@ def setup_routes(app, photo_storage: PhotoStorage, config: dict):
     def get_existing_files():
         """获取已存在的文件列表（用于增量同步）"""
         files = photo_storage.list_existing_files()
-        return jsonify({"success": True, "count": len(files), "files": files})
+        return jsonify({"success": True, "count": len(files) - 1, "files": files})
+
+    @app.route("/api/sync/check", methods=["POST"])
+    @auth_required
+    def check_files():
+        """批量检查文件是否已存在（基于内容哈希）
+
+        请求体: { "files": [ { "name": "xxx.jpg", "size": 1234, "hash": "sha256..." }, ... ] }
+        响应:   { "success": true, "results": { "sha256...": { "exists": true/false, "server_name": "..." } } }
+        """
+        data = request.get_json()
+        if not data or "files" not in data:
+            return jsonify({"error": "files list required"}), 400
+
+        files = data["files"]
+        manifest = photo_storage._load_manifest()
+
+        results = {}
+        for item in files:
+            file_hash = item.get("hash", "")
+            name = item.get("name", "")
+            size = item.get("size", 0)
+
+            if not file_hash or len(file_hash) != 64:
+                # 没有提供有效哈希，尝试用 (name, size) 匹配
+                key = (name, size)
+                index = manifest.get("__index__", {})
+                matched_hash = index.get(key) if isinstance(index, dict) else None
+                if matched_hash and matched_hash in manifest:
+                    results[file_hash or f"{name}_{size}"] = {
+                        "exists": True,
+                        "server_name": manifest[matched_hash].get("original_name", name)
+                    }
+                else:
+                    results[file_hash or f"{name}_{size}"] = {"exists": False}
+                continue
+
+            # 新格式: manifest[hash] -> [entries list]
+            entries = manifest.get(file_hash, [])
+            if entries:
+                results[file_hash] = {
+                    "exists": True,
+                    "server_name": entries[0].get("original_name", "")
+                }
+            else:
+                results[file_hash] = {"exists": False}
+
+        return jsonify({"success": True, "results": results})
 
     # ==================== 分片续传相关 ====================
 
@@ -343,6 +390,42 @@ def setup_routes(app, photo_storage: PhotoStorage, config: dict):
 
         from flask import send_file
         return send_file(full_path, mimetype=mimetype)
+
+    @app.route("/api/gallery/delete", methods=["POST"])
+    @auth_required
+    def gallery_delete():
+        """批量删除照片"""
+        data = request.get_json()
+        if not data or "paths" not in data:
+            return jsonify({"error": "paths required"}), 400
+        if not isinstance(data["paths"], list):
+            return jsonify({"error": "paths must be a list"}), 400
+        try:
+            result = photo_storage.delete_photos(data["paths"])
+            return jsonify({"success": True, **result})
+        except Exception as e:
+            logger.error(f"gallery_delete failed: {e}")
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/gallery/rename", methods=["POST"])
+    @auth_required
+    def gallery_rename():
+        """重命名照片"""
+        data = request.get_json()
+        if not data or "path" not in data or "new_name" not in data:
+            return jsonify({"error": "path and new_name required"}), 400
+        try:
+            result = photo_storage.rename_photo(data["path"], data["new_name"])
+            return jsonify({"success": True, **result})
+        except FileNotFoundError as e:
+            return jsonify({"error": str(e)}), 404
+        except FileExistsError as e:
+            return jsonify({"error": str(e)}), 409
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except Exception as e:
+            logger.error(f"gallery_rename failed: {e}")
+            return jsonify({"error": str(e)}), 500
 
     # ==================== 健康检查 ====================
 
