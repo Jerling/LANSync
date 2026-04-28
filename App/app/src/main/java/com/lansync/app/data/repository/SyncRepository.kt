@@ -85,6 +85,22 @@ class SyncRepository @Inject constructor(
         }
     }
 
+    /**
+     * 批量检查文件是否已存在于服务器（基于内容哈希）
+     */
+    suspend fun checkFilesOnServer(items: List<FileCheckItem>): Result<Map<String, FileCheckResult>> {
+        return try {
+            val response = api.checkFiles(CheckFilesRequest(items))
+            if (response.isSuccessful && response.body() != null) {
+                Result.success(response.body()!!.results)
+            } else {
+                Result.failure(Exception("Failed to check files"))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     suspend fun healthCheck(): Result<HealthResponse> {
         return try {
             val response = api.healthCheck()
@@ -146,7 +162,8 @@ class SyncRepository @Inject constructor(
                         fileName = fileName,
                         fileSize = size,
                         timestamp = timestamp ?: 0,
-                        serverPath = uploadResponse.data?.savedPath ?: ""
+                        serverPath = uploadResponse.data?.savedPath ?: "",
+                        hash = uploadResponse.data?.hash ?: ""
                     )
                 )
                 Result.success(uploadResponse)
@@ -181,7 +198,8 @@ class SyncRepository @Inject constructor(
                         fileName = file.name,
                         fileSize = file.length(),
                         timestamp = timestamp ?: file.lastModified(),
-                        serverPath = uploadResponse.data?.savedPath ?: ""
+                        serverPath = uploadResponse.data?.savedPath ?: "",
+                        hash = uploadResponse.data?.hash ?: ""
                     )
                 )
                 Result.success(uploadResponse)
@@ -283,7 +301,8 @@ class SyncRepository @Inject constructor(
                 fileName = fileName,
                 fileSize = size,
                 timestamp = timestamp ?: 0,
-                serverPath = uploadData.savedPath
+                serverPath = uploadData.savedPath,
+                hash = uploadData.hash
             )
         )
         return Result.success(UploadResponse(true, "Uploaded", uploadData))

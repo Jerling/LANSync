@@ -6,12 +6,14 @@ import android.content.Context
 import android.os.Build
 import android.provider.MediaStore
 import com.lansync.app.data.repository.SyncRepository
+import com.lansync.app.domain.model.FileCheckItem
 import com.lansync.app.domain.model.PhotoFile
 import com.lansync.app.domain.model.SyncState
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import java.io.File
+import java.security.MessageDigest
 import javax.inject.Inject
 
 class SyncPhotosUseCase @Inject constructor(
@@ -121,38 +123,78 @@ class SyncPhotosUseCase @Inject constructor(
     }
 
     /**
-     * 过滤未同步的照片（基于文件名和大小判断，同时检查服务器是否真的存在）
+     * 过滤未同步的照片（基于 SHA256 哈希，摆脱本地 Room 记录依赖）
+     *
+     * 重装 APP 后，本地 Room DB 被清空，但通过计算本地文件的 SHA256，
+     * 调用 Server 的 /api/sync/check 接口查询哪些文件已在 Server 存在，
+     * 实现真正意义上的内容去重。
      */
     suspend fun filterUnsyncedPhotos(photos: List<PhotoFile>): List<PhotoFile> {
-        // 先获取服务器上已存在的文件列表
-        val serverFilesResult = repository.getExistingFiles()
-        if (serverFilesResult.isFailure) {
-            android.util.Log.e("SyncPhotos", "getExistingFiles failed: ${serverFilesResult.exceptionOrNull()?.message}")
-            // 网络失败时，走本地记录判断，视为未同步需要上传
-            return photos.filter { !repository.isFileSyncedByNameAndSize(it.name, it.size) }
-        }
-        val serverFiles = serverFilesResult.getOrNull() ?: emptyMap()
+        if (photos.isEmpty()) return emptyList()
 
-        return photos.filter { photo ->
-            // 跳过 name 为空的无效记录
+        // Step 1: 计算每张照片的 SHA256（流式，不占内存）
+        android.util.Log.d("SyncPhotos", "Computing SHA256 for ${photos.size} files...")
+        val photosWithHash = photos.mapNotNull { photo ->
             if (photo.name.isNullOrBlank()) {
                 android.util.Log.w("SyncPhotos", "Skipping photo with null/empty name: path=${photo.path}")
-                return@filter false
+                return@mapNotNull null
             }
+            val hash = computeSha256(photo.contentUri)
+            if (hash.isEmpty()) {
+                android.util.Log.w("SyncPhotos", "Failed to compute hash for ${photo.name}, will skip")
+                return@mapNotNull null
+            }
+            photo.copy(hash = hash)
+        }
 
-            val localSynced = repository.isFileSyncedByNameAndSize(photo.name, photo.size)
-            if (localSynced) {
-                // 本地记录已同步，但服务器文件可能已被删除
-                // 检查服务器是否真的有这个文件
-                val serverHasFile = serverFiles.containsKey(photo.name)
-                if (!serverHasFile) {
-                    android.util.Log.d("SyncPhotos", "File ${photo.name} marked synced but missing on server, will re-upload")
+        // Step 2: 调用 Server 的 /api/sync/check 批量查询哪些文件已存在
+        val checkItems = photosWithHash.map { FileCheckItem(it.name, it.size, it.hash) }
+        val checkResult = repository.checkFilesOnServer(checkItems)
+
+        return if (checkResult.isSuccess) {
+            val results = checkResult.getOrNull() ?: emptyMap()
+            android.util.Log.d("SyncPhotos", "Server check: ${results.values.count { it.exists }} already synced, ${results.values.count { !it.exists }} need upload")
+
+            // Step 3: 过滤出 Server 上不存在的文件（需要上传）
+            photosWithHash.filter { photo ->
+                val result = results[photo.hash]
+                when {
+                    result == null -> {
+                        // Server 未返回此哈希的结果，尝试用 name+size 兜底
+                        android.util.Log.w("SyncPhotos", "No check result for ${photo.hash.take(8)}, falling back to name+size")
+                        !repository.isFileSyncedByNameAndSize(photo.name, photo.size)
+                    }
+                    !result.exists -> true  // Server 没有，需要上传
+                    else -> false // Server 已有，跳过
                 }
-                // 如果服务器没有，则需要重新上传
-                !serverHasFile
-            } else {
-                true // 本地没记录，需要上传
             }
+        } else {
+            // 网络失败，降级到本地 Room DB 判断（重装后本地 DB 为空，所以大部分会重新上传）
+            android.util.Log.w("SyncPhotos", "checkFilesOnServer failed: ${checkResult.exceptionOrNull()?.message}, falling back to local DB")
+            photosWithHash.filter { photo ->
+                // 网络失败时，只有本地有记录才跳过（重装后本地为空，基本都上传）
+                !repository.isFileSyncedByNameAndSize(photo.name, photo.size)
+            }
+        }
+    }
+
+    /**
+     * 流式计算文件的 SHA256（分块读取，恒定 ~64KB 内存）
+     */
+    private fun computeSha256(uri: android.net.Uri): String {
+        return try {
+            val digest = MessageDigest.getInstance("SHA256")
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                val buffer = ByteArray(65536)
+                var bytesRead: Int
+                while (input.read(buffer).also { bytesRead = it } != -1) {
+                    digest.update(buffer, 0, bytesRead)
+                }
+            }
+            digest.digest().joinToString("") { "%02x".format(it.toInt()) }
+        } catch (e: Exception) {
+            android.util.Log.e("SyncPhotos", "computeSha256 failed for $uri", e)
+            ""
         }
     }
 

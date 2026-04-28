@@ -5,6 +5,7 @@ import kotlinx.coroutines.flow.Flow
 
 /**
  * 已同步文件记录
+ * 重装 APP 后可从 Server 重新同步哈希来重建本地缓存
  */
 @Entity(tableName = "synced_files")
 data class SyncedFileEntity(
@@ -14,7 +15,8 @@ data class SyncedFileEntity(
     val fileSize: Long,
     val timestamp: Long,
     val syncedAt: Long = System.currentTimeMillis(),
-    val serverPath: String
+    val serverPath: String,
+    val hash: String = ""  // SHA256，缓存本地计算结果，加速下次同步
 )
 
 /**
@@ -30,6 +32,9 @@ interface SyncedFileDao {
 
     @Query("SELECT * FROM synced_files WHERE fileName = :fileName AND fileSize = :fileSize")
     suspend fun findByNameAndSize(fileName: String, fileSize: Long): SyncedFileEntity?
+
+    @Query("SELECT * FROM synced_files WHERE hash = :hash LIMIT 1")
+    suspend fun findByHash(hash: String): SyncedFileEntity?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(syncedFile: SyncedFileEntity)
@@ -50,7 +55,7 @@ interface SyncedFileDao {
 /**
  * Room Database
  */
-@Database(entities = [SyncedFileEntity::class], version = 1, exportSchema = false)
+@Database(entities = [SyncedFileEntity::class], version = 2, exportSchema = false)
 abstract class SyncDatabase : RoomDatabase() {
     abstract fun syncedFileDao(): SyncedFileDao
 }
