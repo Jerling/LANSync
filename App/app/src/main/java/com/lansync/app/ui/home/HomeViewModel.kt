@@ -65,15 +65,27 @@ class HomeViewModel @Inject constructor(
     }
 
     fun startSyncService() {
+        val currentState = _uiState.value.syncState
+        // 防止重复启动：已经在扫描或上传中则忽略
+        if (currentState is SyncState.Scanning || currentState is SyncState.Uploading) {
+            return
+        }
+        // 立即更新状态，避免按钮和状态栏不同步
+        _uiState.value = _uiState.value.copy(
+            isServiceRunning = true,
+            syncState = SyncState.Scanning
+        )
         val context = getApplication<Application>()
         WifiSyncService.startService(context)
-        _uiState.value = _uiState.value.copy(isServiceRunning = true)
     }
 
     fun stopSyncService() {
         val context = getApplication<Application>()
         WifiSyncService.stopService(context)
-        _uiState.value = _uiState.value.copy(isServiceRunning = false)
+        _uiState.value = _uiState.value.copy(
+            isServiceRunning = false,
+            syncState = SyncState.Idle
+        )
     }
 
     fun logout() {
