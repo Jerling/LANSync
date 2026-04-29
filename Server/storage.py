@@ -657,13 +657,17 @@ class PhotoStorage:
                 failed.append({"path": rel_path, "reason": str(e)})
                 continue
 
-            # 2. 从 manifest 中移除（按 saved_path 匹配）
+            # 2. 从 manifest 中移除（按 saved_path 匹配，兼容正反斜线）
             # manifest 格式: {hash: entry_dict}，entry_dict 含 saved_path
+            # 注意: Windows 上 manifest 的 saved_path 可能存为反斜线，API 传进来的是正斜线
             removed = False
+            rel_path_normalized = rel_path.replace("\\", "/")
             for hash_key, entry in list(manifest.items()):
                 if len(hash_key) != 64:
                     continue
-                if isinstance(entry, dict) and entry.get("saved_path") == rel_path:
+                saved = entry.get("saved_path", "") if isinstance(entry, dict) else ""
+                saved_normalized = saved.replace("\\", "/")
+                if saved_normalized == rel_path_normalized:
                     del manifest[hash_key]
                     removed = True
             if not removed:
@@ -708,18 +712,20 @@ class PhotoStorage:
         old_full.rename(new_full)
         logger.info(f"Renamed: {old_full} -> {new_full}")
 
-        # 更新 manifest（按 saved_path 匹配）
-        # manifest 格式: {hash: entry_dict}，不再需要遍历 entries 列表
+        # 更新 manifest（按 saved_path 匹配，兼容正反斜线）
         manifest = self._load_manifest()
         updated = False
+        old_path_normalized = old_path.replace("\\", "/")
         for hash_key, entry in list(manifest.items()):
             if len(hash_key) != 64:
                 continue
-            if isinstance(entry, dict) and entry.get("saved_path") == old_path:
+            saved = entry.get("saved_path", "") if isinstance(entry, dict) else ""
+            saved_normalized = saved.replace("\\", "/")
+            if saved_normalized == old_path_normalized:
                 entry["saved_name"] = new_name_safe
                 entry["original_name"] = new_name_safe
-                # 更新 saved_path
-                new_rel = str(new_full.relative_to(self.base_dir))
+                # 更新 saved_path（统一用正斜线）
+                new_rel = str(new_full.relative_to(self.base_dir)).replace("\\", "/")
                 entry["saved_path"] = new_rel
                 manifest[hash_key] = entry
                 updated = True
