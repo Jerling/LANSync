@@ -7,10 +7,16 @@ import com.lansync.app.data.local.SyncedFileDao
 import com.lansync.app.data.local.TokenManager
 import com.lansync.app.domain.model.*
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import okhttp3.Request
+import android.content.ContentValues
+import android.content.Context
+import android.provider.MediaStore
 import javax.inject.Inject
 
 data class GalleryUiState(
@@ -26,6 +32,16 @@ data class GalleryUiState(
     // 操作中状态
     val isOperationInProgress: Boolean = false,
     val operationMessage: String? = null,      // 操作结果提示（成功或失败）
+    // 批量下载状态
+    val isBatchDownloading: Boolean = false,
+    val batchDownloadCurrent: Int = 0,          // 当前下载到第几张
+    val batchDownloadTotal: Int = 0,            // 总数
+    val batchDownloadProgress: Int = 0,         // 当前文件下载进度 0-100
+    val batchDownloadMessage: String? = null,   // 批次完成消息
+    // 单张预览下载状态
+    val isPreviewDownloading: Boolean = false,
+    val previewDownloadProgress: Int = 0,       // 0-100
+    val previewDownloadMessage: String? = null   // 预览下载结果消息
 )
 
 data class SelectedPhoto(
@@ -152,7 +168,11 @@ class GalleryViewModel @Inject constructor(
     }
 
     fun clearSelectedPhoto() {
-        _uiState.value = _uiState.value.copy(selectedPhoto = null)
+        _uiState.value = _uiState.value.copy(
+            selectedPhoto = null,
+            batchDownloadMessage = null,
+            previewDownloadMessage = null
+        )
     }
 
     fun navigatePhoto(direction: Int) {
@@ -208,7 +228,8 @@ class GalleryViewModel @Inject constructor(
     fun clearSelection() {
         _uiState.value = _uiState.value.copy(
             isSelecting = false,
-            selectedIds = emptySet()
+            selectedIds = emptySet(),
+            batchDownloadMessage = null
         )
     }
 
@@ -300,5 +321,186 @@ class GalleryViewModel @Inject constructor(
 
     fun clearOperationMessage() {
         _uiState.value = _uiState.value.copy(operationMessage = null)
+    }
+
+    fun clearBatchDownloadMessage() {
+        _uiState.value = _uiState.value.copy(batchDownloadMessage = null)
+    }
+
+    fun clearPreviewDownloadMessage() {
+        _uiState.value = _uiState.value.copy(previewDownloadMessage = null)
+    }
+
+    /** 预览弹窗中下载单张照片 */
+    fun downloadPreviewPhoto(photo: GalleryPhoto, context: Context) {
+        if (_uiState.value.isPreviewDownloading) return
+
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(
+                isPreviewDownloading = true,
+                previewDownloadProgress = 0,
+                previewDownloadMessage = null
+            )
+
+            val result = downloadSinglePhoto(photo, context)
+
+            if (result != null) {
+                _uiState.value = _uiState.value.copy(
+                    isPreviewDownloading = false,
+                    previewDownloadProgress = 100,
+                    previewDownloadMessage = "已保存到本地相册"
+                )
+                updateSelectedPhotoLocal(result.toString())
+            } else {
+                _uiState.value = _uiState.value.copy(
+                    isPreviewDownloading = false,
+                    previewDownloadMessage = "下载失败"
+                )
+            }
+        }
+    }
+
+    /** 批量下载选中的照片到本地相册 */
+    fun downloadSelected(context: Context) {
+        if (_uiState.value.isBatchDownloading) return
+
+        val state = _uiState.value
+        if (state.selectedIds.isEmpty()) return
+
+        val photos = state.groups.flatMap { it.photos }.filter { it.id in state.selectedIds }
+        if (photos.isEmpty()) return
+
+        viewModelScope.launch {
+            _uiState.value = state.copy(
+                isBatchDownloading = true,
+                batchDownloadCurrent = 0,
+                batchDownloadTotal = photos.size,
+                batchDownloadProgress = 0,
+                batchDownloadMessage = null
+            )
+
+            var successCount = 0
+            var failCount = 0
+
+            for ((index, photo) in photos.withIndex()) {
+                _uiState.value = _uiState.value.copy(
+                    batchDownloadCurrent = index + 1,
+                    batchDownloadProgress = 0
+                )
+
+                val result = downloadSinglePhoto(photo, context)
+                if (result != null) {
+                    successCount++
+                } else {
+                    failCount++
+                }
+            }
+
+            val msg = when {
+                failCount == 0 -> "已保存 $successCount 张到本地相册"
+                successCount == 0 -> "下载失败"
+                else -> "已保存 $successCount 张，$failCount 张失败"
+            }
+
+            _uiState.value = _uiState.value.copy(
+                isBatchDownloading = false,
+                batchDownloadProgress = 100,
+                batchDownloadMessage = msg
+            )
+        }
+    }
+
+    /**
+     * 下载单张照片，返回保存后的 Uri（失败返回 null）
+     * 在 withContext(Dispatchers.IO) 中调用
+     */
+    private suspend fun downloadSinglePhoto(photo: GalleryPhoto, context: Context): android.net.Uri? {
+        return withContext(Dispatchers.IO) {
+            try {
+                val photoUrl = "${baseUrl}api/gallery/photo/${photo.path}?token=$authToken"
+                val request = Request.Builder().url(photoUrl).build()
+
+                ApiClient.getOkHttpClient().newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) return@withContext null
+
+                    val body = response.body ?: return@withContext null
+                    val totalBytes = body.contentLength()
+                    val contentType = body.contentType()?.toString() ?: "image/*"
+
+                    val mimeType = when {
+                        photo.type == "video" -> "video/*"
+                        photo.name.endsWith(".mp4") -> "video/mp4"
+                        photo.name.endsWith(".mov") -> "video/quicktime"
+                        photo.name.endsWith(".png") -> "image/png"
+                        photo.name.endsWith(".gif") -> "image/gif"
+                        contentType.contains("video") -> "video/*"
+                        else -> "image/*"
+                    }
+
+                    val isVideo = mimeType.startsWith("video")
+                    val contentUri = if (isVideo) {
+                        MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+                    } else {
+                        MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+                    }
+
+                    val contentValues = ContentValues().apply {
+                        put(MediaStore.MediaColumns.DISPLAY_NAME, photo.name)
+                        put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                            put(MediaStore.MediaColumns.RELATIVE_PATH, if (isVideo) "Movies/LANSync" else "Pictures/LANSync")
+                            put(MediaStore.MediaColumns.IS_PENDING, 1)
+                        }
+                    }
+
+                    val resolver = context.contentResolver
+                    val uri = resolver.insert(contentUri, contentValues) ?: return@withContext null
+
+                    resolver.openOutputStream(uri)?.use { outputStream ->
+                        val buffer = ByteArray(8192)
+                        var bytesRead: Int
+                        var totalRead = 0L
+                        body.byteStream().use { inputStream ->
+                            while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+                                outputStream.write(buffer, 0, bytesRead)
+                                totalRead += bytesRead
+                                if (totalBytes > 0) {
+                                    val progress = ((totalRead * 100) / totalBytes).toInt().coerceIn(0, 100)
+                                    _uiState.value = _uiState.value.copy(batchDownloadProgress = progress)
+                                }
+                            }
+                        }
+                    }
+
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                        contentValues.clear()
+                        contentValues.put(MediaStore.MediaColumns.IS_PENDING, 0)
+                        resolver.update(uri, contentValues, null, null)
+                    }
+
+                    syncedFileDao.insert(
+                        com.lansync.app.data.local.SyncedFileEntity(
+                            fileName = photo.name,
+                            fileSize = photo.size,
+                            serverPath = photo.path,
+                            hash = photo.id,
+                            filePath = uri.toString(),
+                            timestamp = System.currentTimeMillis()
+                        )
+                    )
+
+                    uri
+                }
+            } catch (_: Exception) {
+                null
+            }
+        }
+    }
+
+    private fun updateSelectedPhotoLocal(uri: String) {
+        val selected = _uiState.value.selectedPhoto ?: return
+        _uiState.value = _uiState.value.copy(
+            selectedPhoto = selected.copy(hasLocal = true, localUri = uri)
+        )
     }
 }

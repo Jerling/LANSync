@@ -63,6 +63,13 @@ fun GalleryScreen(
             viewModel.clearOperationMessage()
         }
     }
+    // 批量下载完成 Snackbar
+    LaunchedEffect(uiState.batchDownloadMessage) {
+        uiState.batchDownloadMessage?.let {
+            snackbarHostState.showSnackbar(it)
+            viewModel.clearBatchDownloadMessage()
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -120,6 +127,27 @@ fun GalleryScreen(
                             .padding(horizontal = 16.dp),
                         horizontalArrangement = Arrangement.SpaceEvenly
                     ) {
+                        // 下载按钮
+                        val context = androidx.compose.ui.platform.LocalContext.current
+                        TextButton(
+                            onClick = { viewModel.downloadSelected(context) },
+                            enabled = !uiState.isBatchDownloading
+                        ) {
+                            if (uiState.isBatchDownloading) {
+                                CircularProgressIndicator(
+                                    progress = uiState.batchDownloadProgress / 100f,
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp
+                                )
+                                Spacer(Modifier.width(4.dp))
+                                Text("${uiState.batchDownloadCurrent}/${uiState.batchDownloadTotal}")
+                            } else {
+                                Icon(Icons.Default.Download, contentDescription = null)
+                                Spacer(Modifier.width(4.dp))
+                                Text("保存本地 (${uiState.selectedIds.size})")
+                            }
+                        }
+
                         // 重命名按钮
                         TextButton(
                             onClick = {
@@ -130,11 +158,9 @@ fun GalleryScreen(
                                         .first { it.id in uiState.selectedIds }
                                     renameTarget = target
                                     showRenameDialog = true
-                                } else {
-                                    // 不能重命名多张
                                 }
                             },
-                            enabled = uiState.selectedIds.size == 1
+                            enabled = uiState.selectedIds.size == 1 && !uiState.isBatchDownloading
                         ) {
                             Icon(Icons.Default.Edit, contentDescription = null)
                             Spacer(Modifier.width(4.dp))
@@ -144,6 +170,7 @@ fun GalleryScreen(
                         // 删除按钮
                         TextButton(
                             onClick = { viewModel.deleteSelected() },
+                            enabled = !uiState.isBatchDownloading,
                             colors = ButtonDefaults.textButtonColors(
                                 contentColor = MaterialTheme.colorScheme.error
                             )
@@ -226,6 +253,7 @@ fun GalleryScreen(
             PhotoPreviewDialog(
                 selectedPhoto = selected,
                 viewModel = viewModel,
+                uiState = uiState,
                 onDismiss = { viewModel.clearSelectedPhoto() }
             )
         }
@@ -417,9 +445,20 @@ private fun PhotoGridItem(
 private fun PhotoPreviewDialog(
     selectedPhoto: SelectedPhoto,
     viewModel: GalleryViewModel,
+    uiState: GalleryUiState,
     onDismiss: () -> Unit
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
+
+    // 预览下载完成后自动消失
+    LaunchedEffect(uiState.previewDownloadMessage) {
+        uiState.previewDownloadMessage?.let {
+            if (it.startsWith("已保存")) {
+                kotlinx.coroutines.delay(1500)
+                viewModel.clearPreviewDownloadMessage()
+            }
+        }
+    }
 
     // 本地优先：hasLocal=true 时直接用系统图库打开本地文件，秒开无等待
     LaunchedEffect(selectedPhoto.hasLocal, selectedPhoto.localUri) {
@@ -495,7 +534,7 @@ private fun PhotoPreviewDialog(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = selectedPhoto.name,
                         color = Color.White,
@@ -508,9 +547,54 @@ private fun PhotoPreviewDialog(
                         style = MaterialTheme.typography.bodySmall
                     )
                 }
+
+                // 下载按钮（未在下载且本地没有时才显示）
+                if (!uiState.isPreviewDownloading && !selectedPhoto.hasLocal) {
+                    IconButton(onClick = {
+                        val photo = com.lansync.app.domain.model.GalleryPhoto(
+                            id = selectedPhoto.id,
+                            name = selectedPhoto.name,
+                            path = selectedPhoto.path,
+                            size = selectedPhoto.size,
+                            type = selectedPhoto.type
+                        )
+                        viewModel.downloadPreviewPhoto(photo, context)
+                    }) {
+                        Icon(
+                            Icons.Default.Download,
+                            contentDescription = "保存到本地",
+                            tint = Color.White
+                        )
+                    }
+                }
+
+                // 下载进度指示
+                if (uiState.isPreviewDownloading) {
+                    CircularProgressIndicator(
+                        progress = uiState.previewDownloadProgress / 100f,
+                        modifier = Modifier.size(24.dp),
+                        color = Color.White,
+                        strokeWidth = 2.dp
+                    )
+                }
+
                 IconButton(onClick = onDismiss) {
                     Icon(Icons.Default.Close, contentDescription = "关闭", tint = Color.White)
                 }
+            }
+
+            // 下载结果提示
+            uiState.previewDownloadMessage?.let { msg ->
+                Text(
+                    text = msg,
+                    color = if (msg.startsWith("已保存")) Color.Green else Color.Yellow,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 72.dp)
+                        .background(Color.Black.copy(alpha = 0.7f), RoundedCornerShape(8.dp))
+                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                )
             }
 
             // Navigation arrows
