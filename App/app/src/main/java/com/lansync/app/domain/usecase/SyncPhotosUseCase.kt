@@ -12,6 +12,9 @@ import com.lansync.app.domain.model.PhotoFile
 import com.lansync.app.domain.model.SyncState
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flow
 import java.io.File
 import java.security.MessageDigest
@@ -21,6 +24,20 @@ class SyncPhotosUseCase @Inject constructor(
     @ApplicationContext private val context: Context,
     private val repository: SyncRepository
 ) {
+    private val _debugLogs = MutableStateFlow<List<String>>(emptyList())
+    val debugLogs: StateFlow<List<String>> = _debugLogs.asStateFlow()
+
+    private fun log(tag: String, message: String) {
+        val entry = "[${tag}] $message"
+        android.util.Log.d(tag, message)
+        _debugLogs.value = _debugLogs.value + entry
+        // 最多保留 100 条
+        if (_debugLogs.value.size > 100) {
+            _debugLogs.value = _debugLogs.value.takeLast(100)
+        }
+    }
+
+    private fun logScan(message: String) = log("SyncPhotos", message)
     /**
      * 扫描本地照片
      */
@@ -61,7 +78,7 @@ class SyncPhotosUseCase @Inject constructor(
             isVideo = true
         )
 
-        android.util.Log.d("SyncPhotos", "scanLocalPhotos: found ${photos.size} photos/videos")
+        logScan("scanLocalPhotos: found ${photos.size} photos/videos")
         return photos
     }
 
@@ -136,12 +153,12 @@ class SyncPhotosUseCase @Inject constructor(
         if (photos.isEmpty()) return emptyList()
 
         // ========== 阶段1: name+size 快速过滤（一次网络往返，不计算哈希）==========
-        android.util.Log.d("SyncPhotos", "Stage 1: checking ${photos.size} files by name+size...")
+        logScan("Stage 1: checking ${photos.size} files by name+size...")
         val nameSizeItems = photos.mapNotNull { photo ->
             if (photo.name.isNullOrBlank()) null
             else FileNameSizeItem(photo.name, photo.size)
         }
-
+        logScan("Stage 1: checking ${photos.size} files by name+size...")
         val nameSizeResult = repository.checkFilesByNamesOnServer(nameSizeItems)
 
         val nameSizeExists = nameSizeResult.getOrNull() ?: emptyMap()
@@ -157,7 +174,7 @@ class SyncPhotosUseCase @Inject constructor(
             }
         }
 
-        android.util.Log.d("SyncPhotos", "Stage 1 result: ${definitelySynced.size} confirmed synced, ${needHashCheck.size} need hash check")
+        logScan("Stage 1 result: ${definitelySynced.size} confirmed synced, ${needHashCheck.size} need hash check (of ${photos.size} total)")
 
         // 如果全部已在 Server，直接返回空
         if (needHashCheck.isEmpty()) {
@@ -165,14 +182,19 @@ class SyncPhotosUseCase @Inject constructor(
         }
 
         // ========== 阶段2: 对可能需要上传的文件计算 SHA256 并确认 ==========
-        android.util.Log.d("SyncPhotos", "Stage 2: computing SHA256 for ${needHashCheck.size} files...")
+        logScan("Stage 2: computing SHA256 for ${needHashCheck.size} files...")
         val photosWithHash = mutableListOf<Pair<PhotoFile, String>>()
+        val total = needHashCheck.size
 
-        for (photo in needHashCheck) {
+        for ((index, photo) in needHashCheck.withIndex()) {
             if (photo.name.isNullOrBlank()) continue
             val hash = computeSha256(photo.contentUri)
             if (hash.isNotEmpty()) {
                 photosWithHash.add(photo to hash)
+            }
+            // 每 10 张打印一次进度
+            if ((index + 1) % 10 == 0 || index == total - 1) {
+                logScan("Stage 2 hash progress: ${index + 1}/$total")
             }
         }
 
@@ -190,7 +212,7 @@ class SyncPhotosUseCase @Inject constructor(
             when {
                 result == null -> {
                     // hash 查询没返回（网络问题），降级：传 name+size 都不存在才上传
-                    android.util.Log.w("SyncPhotos", "Hash check returned null for ${photo.name}, falling back to name+size")
+                    logScan("Hash check returned null for ${photo.name}, falling back to name+size")
                     val key = "${photo.name}_${photo.size}"
                     definitelySynced.add(key)
                     false
@@ -222,7 +244,7 @@ class SyncPhotosUseCase @Inject constructor(
             }
             digest.digest().joinToString("") { "%02x".format(it.toInt()) }
         } catch (e: Exception) {
-            android.util.Log.e("SyncPhotos", "computeSha256 failed for $uri", e)
+            logScan("computeSha256 failed for $uri: ${e.message}")
             ""
         }
     }
@@ -260,7 +282,7 @@ class SyncPhotosUseCase @Inject constructor(
             if (result.isSuccess) {
                 successCount++
             } else {
-                android.util.Log.e("SyncPhotos", "upload failed: ${result.exceptionOrNull()?.message}")
+                logScan("upload failed: ${result.exceptionOrNull()?.message}")
                 failCount++
                 failedFileNames.add(photo.name)
             }

@@ -40,6 +40,10 @@ class WifiSyncService : Service() {
     private val _syncStateChannel = MutableSharedFlow<SyncState>(replay = 1)
     val syncStateChannel: SharedFlow<SyncState> = _syncStateChannel.asSharedFlow()
 
+    // 日志通道：转发 UseCase 的调试日志
+    private val _debugLogChannel = MutableSharedFlow<String>(extraBufferCapacity = 100)
+    val debugLogChannel: SharedFlow<String> = _debugLogChannel.asSharedFlow()
+
     companion object {
         private const val NOTIFICATION_ID = 1001
         private const val CHANNEL_ID = "wifi_sync_channel"
@@ -51,10 +55,14 @@ class WifiSyncService : Service() {
         const val ACTION_START_SYNC = "com.lansync.app.START_SYNC"
         const val ACTION_STOP_SYNC = "com.lansync.app.STOP_SYNC"
 
-        // 静态访问器，兼容 HomeViewModel 的调用方式
-        val syncStateChannel: SharedFlow<SyncState>
-            get() = currentInstance?._syncStateChannel
-                ?: MutableSharedFlow<SyncState>(replay = 1)
+        // 静态 StateFlow：Service 和 HomeViewModel 都访问同一个实例，避免时序问题
+        // init 时 currentInstance=null 也能正常初始化，不会像 SharedFlow 那样拿到空实例
+        private val _syncStateFlow = MutableStateFlow<SyncState>(SyncState.Idle)
+        val syncStateFlow: StateFlow<SyncState> = _syncStateFlow.asStateFlow()
+
+        // 静态日志 channel，同理
+        private val _debugLogFlow = MutableSharedFlow<String>(extraBufferCapacity = 100)
+        val debugLogFlow: SharedFlow<String> = _debugLogFlow.asSharedFlow()
 
         fun startService(context: Context) {
             val intent = Intent(context, WifiSyncService::class.java).apply {
@@ -85,10 +93,9 @@ class WifiSyncService : Service() {
         when (intent?.action) {
             ACTION_START_SYNC -> {
                 startForeground(NOTIFICATION_ID, createNotification("同步服务运行中"))
-                // 立即 emit Scanning，避免 isServiceRunning=true 但状态文字停留在"空闲"
-                _syncState.value = SyncState.Scanning
+                // 写入静态 StateFlow，HomeViewModel 一定能收到
+                _syncStateFlow.value = SyncState.Scanning
                 serviceScope.launch {
-                    _syncStateChannel.emit(SyncState.Scanning)
                     performSync()
                 }
             }
@@ -144,7 +151,7 @@ class WifiSyncService : Service() {
             // 1. 检查是否已登录
             if (!repository.isLoggedIn()) {
                 android.util.Log.e("WifiSyncService", "performSync: not logged in")
-                _syncState.value = SyncState.Error("未登录，请先登录")
+                _syncStateFlow.value = SyncState.Error("未登录，请先登录")
                 return
             }
 
@@ -152,24 +159,34 @@ class WifiSyncService : Service() {
             val healthResult = repository.healthCheck()
             if (healthResult.isFailure) {
                 android.util.Log.e("WifiSyncService", "performSync: health check failed")
-                _syncState.value = SyncState.Error("无法连接到服务器")
+                _syncStateFlow.value = SyncState.Error("无法连接到服务器")
                 return
             }
             android.util.Log.d("WifiSyncService", "performSync: health check OK")
 
-            // 3. 扫描本地照片
-            _syncState.value = SyncState.Scanning
+            // 3. 收集 UseCase 的调试日志并转发到 UI
+            serviceScope.launch {
+                syncPhotosUseCase.debugLogs.collect { logs: List<String> ->
+                    val lastLog = logs.lastOrNull()
+                    if (lastLog != null) {
+                        _debugLogFlow.emit(lastLog)
+                    }
+                }
+            }
+
+            // 4. 扫描本地照片
+            _syncStateFlow.value = SyncState.Scanning
             val photos = syncPhotosUseCase.scanLocalPhotos()
             android.util.Log.d("WifiSyncService", "performSync: scanned ${photos.size} photos")
 
             if (photos.isEmpty()) {
-                _syncState.value = SyncState.AllSynced
+                _syncStateFlow.value = SyncState.AllSynced
                 updateNotification("没有新照片需要同步")
                 stopSelf()
                 return
             }
 
-            // 4. 获取设备ID（部分设备可能抛出 SecurityException）
+            // 5. 获取设备ID（部分设备可能抛出 SecurityException）
             val deviceId: String = try {
                 Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID) ?: "unknown_device"
             } catch (e: Exception) {
@@ -180,8 +197,7 @@ class WifiSyncService : Service() {
             try {
                 syncPhotosUseCase.uploadPhotos(photos, deviceId).collect { state ->
                     try {
-                        _syncState.value = state
-                        serviceScope.launch { _syncStateChannel.emit(state) }
+                        _syncStateFlow.value = state
 
                         when (state) {
                             is SyncState.Progress -> {
@@ -204,15 +220,14 @@ class WifiSyncService : Service() {
                 }
             } catch (e: Exception) {
                 android.util.Log.e("WifiSyncService", "Flow collection failed", e)
-                _syncState.value = SyncState.Error("同步异常: ${e.message}")
+                _syncStateFlow.value = SyncState.Error("同步异常: ${e.message}")
                 updateNotification("同步异常")
             } finally {
-                // 无论成功、全部已同步还是出错，flow 结束后都停止服务
                 stopSelf()
             }
         } catch (e: Exception) {
             android.util.Log.e("WifiSyncService", "performSync crashed", e)
-            _syncState.value = SyncState.Error("同步异常: ${e.message}")
+            _syncStateFlow.value = SyncState.Error("同步异常: ${e.message}")
             updateNotification("同步异常")
             stopSelf()
         }

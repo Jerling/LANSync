@@ -7,7 +7,9 @@ import kotlinx.coroutines.flow.Flow
  * 已同步文件记录
  * 重装 APP 后可从 Server 重新同步哈希来重建本地缓存
  */
-@Entity(tableName = "synced_files")
+@Entity(tableName = "synced_files",
+    indices = [Index("fileName", "fileSize")]  // 加速按 name+size 查询本地文件
+)
 data class SyncedFileEntity(
     @PrimaryKey
     val filePath: String,
@@ -15,7 +17,7 @@ data class SyncedFileEntity(
     val fileSize: Long,
     val timestamp: Long,
     val syncedAt: Long = System.currentTimeMillis(),
-    val serverPath: String,
+    val serverPath: String? = null,  // 可空，防止老版本数据库 null 值反序列化崩溃
     val hash: String = ""  // SHA256，缓存本地计算结果，加速下次同步
 )
 
@@ -55,7 +57,7 @@ interface SyncedFileDao {
 /**
  * Room Database
  */
-@Database(entities = [SyncedFileEntity::class], version = 2, exportSchema = false)
+@Database(entities = [SyncedFileEntity::class], version = 3, exportSchema = false)
 abstract class SyncDatabase : RoomDatabase() {
     abstract fun syncedFileDao(): SyncedFileDao
 }

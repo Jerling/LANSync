@@ -251,7 +251,7 @@ private fun GalleryContent(
     selectedIds: Set<String>,
     isSelecting: Boolean,
     viewModel: GalleryViewModel,
-    onPhotoClick: (GalleryPhoto, List<Pair<String, String>>) -> Unit,
+    onPhotoClick: (GalleryPhoto, List<Triple<String, String, String>>) -> Unit,
     onPhotoLongPress: (GalleryPhoto) -> Unit
 ) {
     LazyColumn(
@@ -280,10 +280,10 @@ private fun GalleryDateSection(
     selectedIds: Set<String>,
     isSelecting: Boolean,
     viewModel: GalleryViewModel,
-    onPhotoClick: (GalleryPhoto, List<Pair<String, String>>) -> Unit,
+    onPhotoClick: (GalleryPhoto, List<Triple<String, String, String>>) -> Unit,
     onPhotoLongPress: (GalleryPhoto) -> Unit
 ) {
-    val allPhotos: List<Pair<String, String>> = group.photos.map { it.id to it.path }
+    val allPhotos: List<Triple<String, String, String>> = group.photos.map { Triple(it.id, it.path, it.name) }
 
     Column(modifier = Modifier.fillMaxWidth()) {
         // Date header
@@ -419,6 +419,38 @@ private fun PhotoPreviewDialog(
     viewModel: GalleryViewModel,
     onDismiss: () -> Unit
 ) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+
+    // 本地优先：hasLocal=true 时直接用系统图库打开本地文件，秒开无等待
+    LaunchedEffect(selectedPhoto.hasLocal, selectedPhoto.localUri) {
+        if (selectedPhoto.hasLocal && !selectedPhoto.localUri.isNullOrEmpty()) {
+            val uri = try {
+                android.net.Uri.parse(selectedPhoto.localUri)
+            } catch (_: Exception) {
+                null
+            }
+            uri?.let {
+                try {
+                    val mimeType = when {
+                        selectedPhoto.type == "video" -> "video/*"
+                        selectedPhoto.name.endsWith(".mp4") -> "video/mp4"
+                        selectedPhoto.name.endsWith(".mov") -> "video/quicktime"
+                        selectedPhoto.name.endsWith(".png") -> "image/png"
+                        selectedPhoto.name.endsWith(".gif") -> "image/gif"
+                        else -> "image/*"
+                    }
+                    val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
+                        setDataAndType(it, mimeType)
+                        addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+                    context.startActivity(intent)
+                } catch (_: Exception) {
+                    // 打开失败，静默降级到网络图片
+                }
+            }
+        }
+    }
+
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
@@ -428,7 +460,7 @@ private fun PhotoPreviewDialog(
                 .fillMaxSize()
                 .background(Color.Black)
         ) {
-            // Photo
+            // Photo（本地模式显示 loading 状态提示；网络模式正常加载）
             val photoUrl = viewModel.getPhotoUrl(selectedPhoto.path)
             AsyncImage(
                 model = photoUrl,
@@ -438,6 +470,20 @@ private fun PhotoPreviewDialog(
                     .align(Alignment.Center),
                 contentScale = ContentScale.Fit
             )
+
+            // 本地文件指示
+            if (selectedPhoto.hasLocal) {
+                Text(
+                    text = "📱 本地",
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelSmall,
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(16.dp)
+                        .background(Color.Black.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                )
+            }
 
             // Top bar with close button and info
             Row(

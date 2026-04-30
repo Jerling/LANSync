@@ -3,6 +3,7 @@ package com.lansync.app.ui.gallery
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.lansync.app.data.api.ApiClient
+import com.lansync.app.data.local.SyncedFileDao
 import com.lansync.app.data.local.TokenManager
 import com.lansync.app.domain.model.*
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -34,12 +35,15 @@ data class SelectedPhoto(
     val type: String,
     val size: Long,
     val index: Int,
-    val allPhotos: List<Pair<String, String>> // id to path map for swipe navigation
+    val allPhotos: List<Triple<String, String, String>>, // id to path to name for swipe navigation
+    val hasLocal: Boolean = false,           // 本地是否有同名文件
+    val localUri: String? = null              // 本地文件 URI，有则优先打开
 )
 
 @HiltViewModel
 class GalleryViewModel @Inject constructor(
-    private val tokenManager: TokenManager
+    private val tokenManager: TokenManager,
+    private val syncedFileDao: SyncedFileDao  // 用于查询本地文件
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(GalleryUiState())
@@ -118,7 +122,7 @@ class GalleryViewModel @Inject constructor(
         return "${baseUrl}api/gallery/photo/$photoPath?token=$token"
     }
 
-    fun selectPhoto(photo: GalleryPhoto, allPhotos: List<Pair<String, String>>) {
+    fun selectPhoto(photo: GalleryPhoto, allPhotos: List<Triple<String, String, String>>) {
         _uiState.value = _uiState.value.copy(
             selectedPhoto = SelectedPhoto(
                 id = photo.id,
@@ -127,9 +131,24 @@ class GalleryViewModel @Inject constructor(
                 type = photo.type,
                 size = photo.size,
                 index = allPhotos.indexOfFirst { it.first == photo.id },
-                allPhotos = allPhotos
+                allPhotos = allPhotos,
+                hasLocal = false,
+                localUri = null
             )
         )
+    }
+
+    /** 检查本地是否有同名文件，有则更新 selectedPhoto */
+    suspend fun checkAndUpdateLocalPhoto() {
+        val selected = _uiState.value.selectedPhoto ?: return
+        // 从 allPhotos 中查找同 name+size 的本地记录
+        // 由于 allPhotos 只有 id+path，我们用 name 和 size 在 Room 中查找
+        val local = syncedFileDao.findByNameAndSize(selected.name, selected.size)
+        if (local != null && !local.filePath.isNullOrEmpty()) {
+            _uiState.value = _uiState.value.copy(
+                selectedPhoto = selected.copy(hasLocal = true, localUri = local.filePath)
+            )
+        }
     }
 
     fun clearSelectedPhoto() {
@@ -139,9 +158,9 @@ class GalleryViewModel @Inject constructor(
     fun navigatePhoto(direction: Int) {
         val current = _uiState.value.selectedPhoto ?: return
         val newIndex = (current.index + direction).coerceIn(0, current.allPhotos.size - 1)
-        val (newId, newPath) = current.allPhotos[newIndex]
+        val (newId, newPath, newName) = current.allPhotos[newIndex]
         _uiState.value = _uiState.value.copy(
-            selectedPhoto = current.copy(id = newId, path = newPath, index = newIndex)
+            selectedPhoto = current.copy(id = newId, name = newName, path = newPath, index = newIndex)
         )
     }
 
@@ -156,7 +175,7 @@ class GalleryViewModel @Inject constructor(
     }
 
     /** 点击缩略图：在多选模式下切换选中，非多选模式下打开预览 */
-    fun onPhotoClick(photo: GalleryPhoto, allPhotos: List<Pair<String, String>>) {
+    fun onPhotoClick(photo: GalleryPhoto, allPhotos: List<Triple<String, String, String>>) {
         val state = _uiState.value
         if (state.isSelecting) {
             // 切换选中状态
@@ -172,6 +191,10 @@ class GalleryViewModel @Inject constructor(
             )
         } else {
             selectPhoto(photo, allPhotos)
+            // 异步查询本地是否有同名文件
+            viewModelScope.launch {
+                checkAndUpdateLocalPhoto()
+            }
         }
     }
 
