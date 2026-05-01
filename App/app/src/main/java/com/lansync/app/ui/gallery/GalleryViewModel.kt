@@ -6,18 +6,69 @@ import com.lansync.app.data.api.ApiClient
 import com.lansync.app.data.local.SyncedFileDao
 import com.lansync.app.data.local.TokenManager
 import com.lansync.app.domain.model.*
+import com.lansync.app.service.WifiSyncService
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.Request
 import android.content.ContentValues
 import android.content.Context
 import android.provider.MediaStore
+import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
+
+/** 用 MediaStore 按 name+size 查找本地图片 URI */
+private fun findImageInMediaStore(context: Context, name: String, size: Long): String? {
+    val projection = arrayOf(MediaStore.Images.Media._ID)
+    val selection = "${MediaStore.Images.Media.DISPLAY_NAME} = ? AND ${MediaStore.Images.Media.SIZE} = ?"
+    val cursor = context.contentResolver.query(
+        MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+        projection,
+        selection,
+        arrayOf(name, size.toString()),
+        null
+    )
+    cursor?.use {
+        if (it.moveToFirst()) {
+            val id = it.getLong(it.getColumnIndexOrThrow(MediaStore.Images.Media._ID))
+            return android.content.ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id).toString()
+        }
+    }
+    return null
+}
+
+/** 用 MediaStore 按 name+size 查找本地视频 URI */
+private fun findVideoInMediaStore(context: Context, name: String, size: Long): String? {
+    val projection = arrayOf(MediaStore.Video.Media._ID)
+    val selection = "${MediaStore.Video.Media.DISPLAY_NAME} = ? AND ${MediaStore.Video.Media.SIZE} = ?"
+    val cursor = context.contentResolver.query(
+        MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+        projection,
+        selection,
+        arrayOf(name, size.toString()),
+        null
+    )
+    cursor?.use {
+        if (it.moveToFirst()) {
+            val id = it.getLong(it.getColumnIndexOrThrow(MediaStore.Video.Media._ID))
+            return android.content.ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, id).toString()
+        }
+    }
+    return null
+}
+
+/** 照片导航项：切换预览时需要的所有信息 */
+data class PhotoNavigationItem(
+    val id: String,
+    val path: String,
+    val name: String,
+    val size: Long
+)
 
 data class GalleryUiState(
     val isLoading: Boolean = false,
@@ -51,7 +102,7 @@ data class SelectedPhoto(
     val type: String,
     val size: Long,
     val index: Int,
-    val allPhotos: List<Triple<String, String, String>>, // id to path to name for swipe navigation
+    val allPhotos: List<PhotoNavigationItem>, // 切换预览时的导航数据（id, path, name, size）
     val hasLocal: Boolean = false,           // 本地是否有同名文件
     val localUri: String? = null              // 本地文件 URI，有则优先打开
 )
@@ -59,11 +110,23 @@ data class SelectedPhoto(
 @HiltViewModel
 class GalleryViewModel @Inject constructor(
     private val tokenManager: TokenManager,
-    private val syncedFileDao: SyncedFileDao  // 用于查询本地文件
+    private val syncedFileDao: SyncedFileDao,  // 用于查询本地文件
+    @ApplicationContext private val appContext: Context
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(GalleryUiState())
     val uiState: StateFlow<GalleryUiState> = _uiState.asStateFlow()
+
+    // 预加载所有本地文件映射（serverPath → localUri），切换照片时直接查 Map，无需异步
+    // 注意：必须用 serverPath 做 key，因为：
+    //   - 上传的照片 hash=""（不存在于此 Map）
+    //   - 下载的照片 serverPath = photo.path（Gallery API 返回的相对路径）
+    // 注意：Room 把 "" 存成 null，所以 serverPath 为空时用 fileName+fileSize 兜底
+    private val _localPhotoMap = MutableStateFlow<Map<String, String>>(emptyMap())
+    val localPhotoMap: StateFlow<Map<String, String>> = _localPhotoMap.asStateFlow()
+    // fallback: serverPath 为空时用 name+size 做 key
+    private val _localPhotoNameSizeMap = MutableStateFlow<Map<String, String>>(emptyMap())
+    val localPhotoNameSizeMap: StateFlow<Map<String, String>> = _localPhotoNameSizeMap.asStateFlow()
 
     private val baseUrl: String
         get() = ApiClient.getBaseUrl()
@@ -99,6 +162,10 @@ class GalleryViewModel @Inject constructor(
                 return@launch
             }
             _uiState.value = _uiState.value.copy(isLoading = true, error = null)
+
+            // 关键：先同步等待 Map 加载完成，再调 API（避免用户点照片时 Map 还是空的）
+            preloadLocalPhotoMap()
+
             try {
                 val response = ApiClient.getApi().getGalleryList()
                 if (response.isSuccessful && response.body() != null) {
@@ -138,7 +205,15 @@ class GalleryViewModel @Inject constructor(
         return "${baseUrl}api/gallery/photo/$photoPath?token=$token"
     }
 
-    fun selectPhoto(photo: GalleryPhoto, allPhotos: List<Triple<String, String, String>>) {
+    fun selectPhoto(photo: GalleryPhoto, allPhotos: List<PhotoNavigationItem>) {
+        // 优先用 serverPath 精确匹配，其次用 name+size fallback
+        // 如果都不匹配，再用 MediaStore 实时查找（按类型查图片或视频）
+        val isVideo = photo.type == "video" || photo.name.endsWith(".mp4") || photo.name.endsWith(".mov")
+        val localUri = _localPhotoMap.value[photo.path]
+            ?: _localPhotoNameSizeMap.value["${photo.name}_${photo.size}"]
+            ?: if (isVideo) findVideoInMediaStore(appContext, photo.name, photo.size)
+               else findImageInMediaStore(appContext, photo.name, photo.size)
+        WifiSyncService.emitDebugLog("[Gallery] selectPhoto: id=${photo.id}, path=${photo.path}, name=${photo.name}, size=${photo.size}, hasLocal=${localUri != null}, uri=$localUri")
         _uiState.value = _uiState.value.copy(
             selectedPhoto = SelectedPhoto(
                 id = photo.id,
@@ -146,10 +221,10 @@ class GalleryViewModel @Inject constructor(
                 path = photo.path,
                 type = photo.type,
                 size = photo.size,
-                index = allPhotos.indexOfFirst { it.first == photo.id },
+                index = allPhotos.indexOfFirst { it.id == photo.id },
                 allPhotos = allPhotos,
-                hasLocal = false,
-                localUri = null
+                hasLocal = localUri != null,
+                localUri = localUri
             )
         )
     }
@@ -157,14 +232,33 @@ class GalleryViewModel @Inject constructor(
     /** 检查本地是否有同名文件，有则更新 selectedPhoto */
     suspend fun checkAndUpdateLocalPhoto() {
         val selected = _uiState.value.selectedPhoto ?: return
-        // 从 allPhotos 中查找同 name+size 的本地记录
-        // 由于 allPhotos 只有 id+path，我们用 name 和 size 在 Room 中查找
-        val local = syncedFileDao.findByNameAndSize(selected.name, selected.size)
-        if (local != null && !local.filePath.isNullOrEmpty()) {
+        // 从预加载的 Map 中查找
+        val key = "${selected.name}_${selected.size}"
+        val localUri = _localPhotoMap.value[key]
+        if (localUri != null) {
             _uiState.value = _uiState.value.copy(
-                selectedPhoto = selected.copy(hasLocal = true, localUri = local.filePath)
+                selectedPhoto = selected.copy(hasLocal = true, localUri = localUri)
             )
         }
+    }
+
+    /** 一次性加载所有本地文件到 Map，同步等待结果 */
+    private suspend fun preloadLocalPhotoMap() {
+        val files = withContext(Dispatchers.IO) {
+            syncedFileDao.getAllSyncedFiles().first()
+        }
+        // Map1: serverPath → localUri（下载的照片有这个）
+        val serverPathMap = files
+            .filter { !it.serverPath.isNullOrEmpty() && !it.filePath.isNullOrEmpty() }
+            .associate { it.serverPath!! to it.filePath!! }
+        // Map2: name+size → localUri（上传的照片 serverPath 为 null，用这个兜底）
+        val nameSizeMap = files
+            .filter { !it.fileName.isNullOrEmpty() && it.fileSize > 0 && !it.filePath.isNullOrEmpty() }
+            .associate { "${it.fileName}_${it.fileSize}" to it.filePath!! }
+
+        _localPhotoMap.value = serverPathMap
+        _localPhotoNameSizeMap.value = nameSizeMap
+        WifiSyncService.emitDebugLog("[Gallery] DB查询: serverPathMap=${serverPathMap.size}条, nameSizeMap=${nameSizeMap.size}条, serverPaths=${serverPathMap.keys.take(3)}, nameSizes=${nameSizeMap.keys.toList()}")
     }
 
     fun clearSelectedPhoto() {
@@ -178,9 +272,24 @@ class GalleryViewModel @Inject constructor(
     fun navigatePhoto(direction: Int) {
         val current = _uiState.value.selectedPhoto ?: return
         val newIndex = (current.index + direction).coerceIn(0, current.allPhotos.size - 1)
-        val (newId, newPath, newName) = current.allPhotos[newIndex]
+        val item = current.allPhotos[newIndex]
+        // 优先用 serverPath 精确匹配，其次用 name+size fallback
+        val isVideo = item.name.endsWith(".mp4") || item.name.endsWith(".mov")
+        val localUri = _localPhotoMap.value[item.path]
+            ?: _localPhotoNameSizeMap.value["${item.name}_${item.size}"]
+            ?: if (isVideo) findVideoInMediaStore(appContext, item.name, item.size)
+               else findImageInMediaStore(appContext, item.name, item.size)
+        WifiSyncService.emitDebugLog("[Gallery] navigatePhoto: id=${item.id}, path=${item.path}, name=${item.name}, hasLocal=${localUri != null}, uri=$localUri")
         _uiState.value = _uiState.value.copy(
-            selectedPhoto = current.copy(id = newId, name = newName, path = newPath, index = newIndex)
+            selectedPhoto = current.copy(
+                id = item.id,
+                name = item.name,
+                path = item.path,
+                index = newIndex,
+                size = item.size,
+                hasLocal = localUri != null,
+                localUri = localUri
+            )
         )
     }
 
@@ -195,7 +304,7 @@ class GalleryViewModel @Inject constructor(
     }
 
     /** 点击缩略图：在多选模式下切换选中，非多选模式下打开预览 */
-    fun onPhotoClick(photo: GalleryPhoto, allPhotos: List<Triple<String, String, String>>) {
+    fun onPhotoClick(photo: GalleryPhoto, allPhotos: List<PhotoNavigationItem>) {
         val state = _uiState.value
         if (state.isSelecting) {
             // 切换选中状态
@@ -211,10 +320,6 @@ class GalleryViewModel @Inject constructor(
             )
         } else {
             selectPhoto(photo, allPhotos)
-            // 异步查询本地是否有同名文件
-            viewModelScope.launch {
-                checkAndUpdateLocalPhoto()
-            }
         }
     }
 

@@ -57,7 +57,7 @@ interface SyncedFileDao {
 /**
  * Room Database
  */
-@Database(entities = [SyncedFileEntity::class], version = 3, exportSchema = false)
+@Database(entities = [SyncedFileEntity::class], version = 4, exportSchema = false)
 abstract class SyncDatabase : RoomDatabase() {
     abstract fun syncedFileDao(): SyncedFileDao
 }

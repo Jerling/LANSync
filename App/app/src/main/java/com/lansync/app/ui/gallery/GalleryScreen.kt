@@ -279,7 +279,7 @@ private fun GalleryContent(
     selectedIds: Set<String>,
     isSelecting: Boolean,
     viewModel: GalleryViewModel,
-    onPhotoClick: (GalleryPhoto, List<Triple<String, String, String>>) -> Unit,
+    onPhotoClick: (GalleryPhoto, List<PhotoNavigationItem>) -> Unit,
     onPhotoLongPress: (GalleryPhoto) -> Unit
 ) {
     LazyColumn(
@@ -308,10 +308,10 @@ private fun GalleryDateSection(
     selectedIds: Set<String>,
     isSelecting: Boolean,
     viewModel: GalleryViewModel,
-    onPhotoClick: (GalleryPhoto, List<Triple<String, String, String>>) -> Unit,
+    onPhotoClick: (GalleryPhoto, List<PhotoNavigationItem>) -> Unit,
     onPhotoLongPress: (GalleryPhoto) -> Unit
 ) {
-    val allPhotos: List<Triple<String, String, String>> = group.photos.map { Triple(it.id, it.path, it.name) }
+    val allPhotos: List<PhotoNavigationItem> = group.photos.map { PhotoNavigationItem(it.id, it.path, it.name, it.size) }
 
     Column(modifier = Modifier.fillMaxWidth()) {
         // Date header
@@ -483,6 +483,8 @@ private fun PhotoPreviewDialog(
                         addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
                     }
                     context.startActivity(intent)
+                    // 启动外部 App 后直接关闭预览，返回缩略图列表
+                    onDismiss()
                 } catch (_: Exception) {
                     // 打开失败，静默降级到网络图片
                 }

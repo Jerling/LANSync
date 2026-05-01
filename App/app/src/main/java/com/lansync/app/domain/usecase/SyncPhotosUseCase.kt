@@ -158,7 +158,6 @@ class SyncPhotosUseCase @Inject constructor(
             if (photo.name.isNullOrBlank()) null
             else FileNameSizeItem(photo.name, photo.size)
         }
-        logScan("Stage 1: checking ${photos.size} files by name+size...")
         val nameSizeResult = repository.checkFilesByNamesOnServer(nameSizeItems)
 
         val nameSizeExists = nameSizeResult.getOrNull() ?: emptyMap()

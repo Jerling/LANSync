@@ -14,6 +14,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
@@ -263,8 +264,11 @@ fun HomeScreen(
             Spacer(modifier = Modifier.height(16.dp))
 
             // 调试日志窗口
-            var logsExpanded by remember { mutableStateOf(false) }
+            var logsExpanded by remember { mutableStateOf(true) }
             val debugLogs by viewModel.debugLogs.collectAsState()
+    val clipboardManager = LocalClipboardManager.current
+    val context = LocalContext.current
+    var showCopiedSnackbar by remember { mutableStateOf(false) }
             val listState = rememberLazyListState()
 
             Card(
@@ -293,6 +297,21 @@ fun HomeScreen(
                             Icon(
                                 Icons.Default.Clear,
                                 contentDescription = "清日志",
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                        IconButton(
+                            onClick = {
+                                if (debugLogs.isNotEmpty()) {
+                                    clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(debugLogs.joinToString("\n")))
+                                    showCopiedSnackbar = true
+                                }
+                            },
+                            modifier = Modifier.size(24.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.ContentCopy,
+                                contentDescription = "复制日志",
                                 modifier = Modifier.size(16.dp)
                             )
                         }
@@ -344,6 +363,23 @@ fun HomeScreen(
                             }
                         }
                     }
+                }
+            }
+
+            if (showCopiedSnackbar) {
+                LaunchedEffect(showCopiedSnackbar) {
+                    kotlinx.coroutines.delay(1500)
+                    showCopiedSnackbar = false
+                }
+                Snackbar(
+                    modifier = Modifier.padding(16.dp),
+                    action = {
+                        TextButton(onClick = { showCopiedSnackbar = false }) {
+                            Text("关闭")
+                        }
+                    }
+                ) {
+                    Text("日志已复制到剪贴板")
                 }
             }
         }

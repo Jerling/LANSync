@@ -64,6 +64,11 @@ class WifiSyncService : Service() {
         private val _debugLogFlow = MutableSharedFlow<String>(extraBufferCapacity = 100)
         val debugLogFlow: SharedFlow<String> = _debugLogFlow.asSharedFlow()
 
+        /** 供外部（如 GalleryViewModel）写入调试日志 */
+        fun emitDebugLog(msg: String) {
+            _debugLogFlow.tryEmit(msg)
+        }
+
         fun startService(context: Context) {
             val intent = Intent(context, WifiSyncService::class.java).apply {
                 action = ACTION_START_SYNC
