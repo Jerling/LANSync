@@ -16,23 +16,12 @@ object ApiClient {
     private var baseUrl: String = DEFAULT_BASE_URL
     private var authToken: String? = null
 
-    fun setBaseUrl(url: String) {
-        baseUrl = if (url.endsWith("/")) url else "$url/"
-        retrofit = createRetrofit()
-    }
-
-    fun setAuthToken(token: String?) {
-        authToken = token
-        retrofit = createRetrofit() // Recreate with new interceptor
-    }
-
-    fun getBaseUrl(): String = baseUrl
-
+    private var okHttpClient: OkHttpClient = buildOkHttpClient()
     private var retrofit: Retrofit = createRetrofit()
 
-    private fun createRetrofit(): Retrofit {
+    private fun buildOkHttpClient(): OkHttpClient {
         val loggingInterceptor = HttpLoggingInterceptor().apply {
-            level = HttpLoggingInterceptor.Level.BODY
+            level = HttpLoggingInterceptor.Level.NONE // BODY 会将上传内容全部读入内存打印，日志无用且极易 OOM
         }
 
         val authInterceptor = okhttp3.Interceptor { chain ->
@@ -46,14 +35,16 @@ object ApiClient {
             chain.proceed(request)
         }
 
-        val okHttpClient = OkHttpClient.Builder()
+        return OkHttpClient.Builder()
             .addInterceptor(loggingInterceptor)
             .addInterceptor(authInterceptor)
             .connectTimeout(DEFAULT_TIMEOUT, TimeUnit.SECONDS)
             .readTimeout(DEFAULT_TIMEOUT, TimeUnit.SECONDS)
             .writeTimeout(DEFAULT_TIMEOUT, TimeUnit.SECONDS)
             .build()
+    }
 
+    private fun createRetrofit(): Retrofit {
         return Retrofit.Builder()
             .baseUrl(baseUrl)
             .client(okHttpClient)
@@ -61,5 +52,20 @@ object ApiClient {
             .build()
     }
 
+    fun setBaseUrl(url: String) {
+        baseUrl = if (url.endsWith("/")) url else "$url/"
+        retrofit = createRetrofit()
+    }
+
+    fun setAuthToken(token: String?) {
+        authToken = token
+        okHttpClient = buildOkHttpClient()
+        retrofit = createRetrofit()
+    }
+
+    fun getBaseUrl(): String = baseUrl
+
     fun getApi(): LANSyncApi = retrofit.create(LANSyncApi::class.java)
+
+    fun getOkHttpClient(): OkHttpClient = okHttpClient
 }

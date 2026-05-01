@@ -18,10 +18,15 @@ class TokenManager @Inject constructor(
     @ApplicationContext private val context: Context
 ) {
     companion object {
-        private val TOKEN_KEY = stringPreferencesKey("auth_token")
+        private val TOKEN_KEY = stringPreferencesKey("token")
         private val USERNAME_KEY = stringPreferencesKey("username")
+        private val PASSWORD_KEY = stringPreferencesKey("password")  // 新增：保存密码
         private val SERVER_URL_KEY = stringPreferencesKey("server_url")
         private val TARGET_WIFI_SSID_KEY = stringPreferencesKey("target_wifi_ssid")
+    }
+
+    val passwordFlow: Flow<String?> = context.dataStore.data.map { preferences ->
+        preferences[PASSWORD_KEY]
     }
 
     val tokenFlow: Flow<String?> = context.dataStore.data.map { preferences ->
@@ -52,6 +57,12 @@ class TokenManager @Inject constructor(
         }
     }
 
+    suspend fun savePassword(password: String) {
+        context.dataStore.edit { preferences ->
+            preferences[PASSWORD_KEY] = password
+        }
+    }
+
     suspend fun saveServerUrl(url: String) {
         context.dataStore.edit { preferences ->
             preferences[SERVER_URL_KEY] = url
@@ -71,6 +82,15 @@ class TokenManager @Inject constructor(
             true
         }
         return token
+    }
+
+    suspend fun getPassword(): String? {
+        var password: String? = null
+        context.dataStore.data.first { preferences ->
+            password = preferences[PASSWORD_KEY]
+            true
+        }
+        return password
     }
 
     suspend fun clearAll() {

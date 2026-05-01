@@ -1,57 +1,116 @@
 package com.lansync.app.ui.navigation
 
-import androidx.compose.runtime.Composable
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.PhotoLibrary
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.lansync.app.ui.auth.LoginScreen
+import com.lansync.app.ui.gallery.GalleryScreen
 import com.lansync.app.ui.home.HomeScreen
 import com.lansync.app.ui.settings.SettingsScreen
 
 sealed class Screen(val route: String) {
     object Login : Screen("login")
     object Home : Screen("home")
+    object Gallery : Screen("gallery")
     object Settings : Screen("settings")
 }
+
+data class BottomNavItem(
+    val screen: Screen,
+    val icon: ImageVector,
+    val label: String
+)
+
+val bottomNavItems = listOf(
+    BottomNavItem(Screen.Home, Icons.Default.Home, "同步"),
+    BottomNavItem(Screen.Gallery, Icons.Default.PhotoLibrary, "云相册"),
+    BottomNavItem(Screen.Settings, Icons.Default.Settings, "设置")
+)
 
 @Composable
 fun LANSyncNavHost(
     navController: NavHostController = rememberNavController()
 ) {
-    NavHost(
-        navController = navController,
-        startDestination = Screen.Login.route
-    ) {
-        composable(Screen.Login.route) {
-            LoginScreen(
-                onLoginSuccess = {
-                    navController.navigate(Screen.Home.route) {
-                        popUpTo(Screen.Login.route) { inclusive = true }
+    val navBackStackEntry by navController.currentBackStackEntryAsState()
+    val currentRoute = navBackStackEntry?.destination?.route
+
+    // 是否显示底部导航（登录页不显示）
+    val showBottomBar = currentRoute in listOf(Screen.Home.route, Screen.Gallery.route, Screen.Settings.route)
+
+    Scaffold(
+        bottomBar = {
+            if (showBottomBar) {
+                NavigationBar {
+                    bottomNavItems.forEach { item ->
+                        NavigationBarItem(
+                            icon = { Icon(item.icon, contentDescription = item.label) },
+                            label = { Text(item.label) },
+                            selected = currentRoute == item.screen.route,
+                            onClick = {
+                                if (currentRoute != item.screen.route) {
+                                    navController.navigate(item.screen.route) {
+                                        popUpTo(Screen.Home.route) { saveState = true }
+                                        launchSingleTop = true
+                                        restoreState = true
+                                    }
+                                }
+                            }
+                        )
                     }
                 }
-            )
+            }
         }
-
-        composable(Screen.Home.route) {
-            HomeScreen(
-                onNavigateToSettings = {
-                    navController.navigate(Screen.Settings.route)
-                },
-                onLogout = {
-                    navController.navigate(Screen.Login.route) {
-                        popUpTo(Screen.Home.route) { inclusive = true }
+    ) { padding ->
+        NavHost(
+            navController = navController,
+            startDestination = Screen.Login.route,
+            modifier = Modifier.padding(padding)
+        ) {
+            composable(Screen.Login.route) {
+                LoginScreen(
+                    onLoginSuccess = {
+                        navController.navigate(Screen.Home.route) {
+                            popUpTo(Screen.Login.route) { inclusive = true }
+                        }
                     }
-                }
-            )
-        }
+                )
+            }
 
-        composable(Screen.Settings.route) {
-            SettingsScreen(
-                onNavigateBack = {
-                    navController.popBackStack()
-                }
-            )
+            composable(Screen.Home.route) {
+                HomeScreen(
+                    onNavigateToSettings = {
+                        navController.navigate(Screen.Settings.route)
+                    },
+                    onLogout = {
+                        navController.navigate(Screen.Login.route) {
+                            popUpTo(0) { inclusive = true }
+                        }
+                    }
+                )
+            }
+
+            composable(Screen.Gallery.route) {
+                GalleryScreen()
+            }
+
+            composable(Screen.Settings.route) {
+                SettingsScreen(
+                    onNavigateBack = {
+                        navController.popBackStack()
+                    }
+                )
+            }
         }
     }
 }

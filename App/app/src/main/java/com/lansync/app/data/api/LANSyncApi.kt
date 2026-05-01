@@ -33,6 +33,18 @@ interface LANSyncApi {
     suspend fun getExistingFiles(): Response<ExistingFilesResponse>
 
     /**
+     * 批量检查文件是否已存在（基于内容哈希）
+     */
+    @POST("api/sync/check")
+    suspend fun checkFiles(@Body request: CheckFilesRequest): Response<CheckFilesResponse>
+
+    /**
+     * 基于 name+size 快速检查文件是否存在（不计算哈希，适合首次快速过滤）
+     */
+    @POST("api/sync/check-by-names")
+    suspend fun checkFilesByNames(@Body request: CheckByNamesRequest): Response<CheckByNamesResponse>
+
+    /**
      * 上传单张照片/视频
      */
     @Multipart
@@ -48,4 +60,50 @@ interface LANSyncApi {
      */
     @GET("api/health")
     suspend fun healthCheck(): Response<HealthResponse>
+
+    /**
+     * 初始化分片上传
+     */
+    @POST("api/upload/resume/init")
+    suspend fun resumeInit(@Body request: ResumeInitRequest): Response<ResumeInitResponse>
+
+    /**
+     * 上传分片
+     */
+    @Multipart
+    @POST("api/upload/resume/chunk")
+    suspend fun resumeChunk(
+        @Part("file_id") fileId: RequestBody,
+        @Part chunk: MultipartBody.Part
+    ): Response<ResumeChunkResponse>
+
+    /**
+     * 完成分片上传
+     */
+    @POST("api/upload/resume/complete")
+    suspend fun resumeComplete(@Body request: ResumeCompleteRequest): Response<ResumeCompleteResponse>
+
+    /**
+     * 查询分片上传状态
+     */
+    @GET("api/upload/resume/status")
+    suspend fun resumeStatus(@Query("file_id") fileId: String): Response<ResumeStatusResponse>
+
+    /**
+     * 获取云相册照片列表
+     */
+    @GET("api/gallery/list")
+    suspend fun getGalleryList(): Response<GalleryListResponse>
+
+    /**
+     * 批量删除云相册照片
+     */
+    @POST("api/gallery/delete")
+    suspend fun deletePhotos(@Body request: DeletePhotosRequest): Response<DeletePhotosResponse>
+
+    /**
+     * 重命名云相册照片
+     */
+    @POST("api/gallery/rename")
+    suspend fun renamePhoto(@Body request: RenamePhotoRequest): Response<RenamePhotoResponse>
 }

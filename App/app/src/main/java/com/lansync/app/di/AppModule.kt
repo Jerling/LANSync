@@ -23,7 +23,9 @@ object AppModule {
             context,
             SyncDatabase::class.java,
             "lansync_database"
-        ).build()
+        )
+            .fallbackToDestructiveMigration()  // v1->v2: hash 列加新表，直接清空旧缓存重建
+            .build()
     }
 
     @Provides

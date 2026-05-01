@@ -6,18 +6,38 @@ import android.content.Context
 import android.os.Build
 import android.provider.MediaStore
 import com.lansync.app.data.repository.SyncRepository
+import com.lansync.app.domain.model.FileCheckItem
+import com.lansync.app.domain.model.FileNameSizeItem
 import com.lansync.app.domain.model.PhotoFile
 import com.lansync.app.domain.model.SyncState
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flow
 import java.io.File
+import java.security.MessageDigest
 import javax.inject.Inject
 
 class SyncPhotosUseCase @Inject constructor(
     @ApplicationContext private val context: Context,
     private val repository: SyncRepository
 ) {
+    private val _debugLogs = MutableStateFlow<List<String>>(emptyList())
+    val debugLogs: StateFlow<List<String>> = _debugLogs.asStateFlow()
+
+    private fun log(tag: String, message: String) {
+        val entry = "[${tag}] $message"
+        android.util.Log.d(tag, message)
+        _debugLogs.value = _debugLogs.value + entry
+        // 最多保留 100 条
+        if (_debugLogs.value.size > 100) {
+            _debugLogs.value = _debugLogs.value.takeLast(100)
+        }
+    }
+
+    private fun logScan(message: String) = log("SyncPhotos", message)
     /**
      * 扫描本地照片
      */
@@ -58,7 +78,7 @@ class SyncPhotosUseCase @Inject constructor(
             isVideo = true
         )
 
-        android.util.Log.d("SyncPhotos", "scanLocalPhotos: found ${photos.size} photos/videos")
+        logScan("scanLocalPhotos: found ${photos.size} photos/videos")
         return photos
     }
 
@@ -95,8 +115,10 @@ class SyncPhotosUseCase @Inject constructor(
                 val dateModified = cursor.getLong(dateModifiedColumn)
                 val path = cursor.getString(dataColumn)
 
-                // 跳过无效文件
+                // 跳过无效文件（路径为空）
                 if (path.isNullOrEmpty()) continue
+                // 跳过 name 为空的记录（极少数情况下 DISPLAY_NAME 可能为 null）
+                if (name.isNullOrEmpty()) continue
 
                 // 优先用 DATE_TAKEN，为0则用 DATE_MODIFIED
                 val effectiveTimestamp = if (dateTaken > 0) dateTaken else dateModified
@@ -119,26 +141,110 @@ class SyncPhotosUseCase @Inject constructor(
     }
 
     /**
-     * 过滤未同步的照片（基于文件名和大小判断，同时检查服务器是否真的存在）
+     * 过滤未同步的照片（两阶段：快速 name+size 过滤 + 懒计算 SHA256 确认）
+     *
+     * 阶段1：用 name+size 快速问 Server，返回在 Server 上存在的文件
+     * 阶段2：对 name+size 查不到的（可能新文件或 Server 缺失），计算 SHA256 确认
+     *
+     * 重装 APP 后，本地 Room DB 被清空，但通过 name+size 和 SHA256 双重校验，
+     * 实现真正意义上的内容去重，不依赖本地记录。
      */
     suspend fun filterUnsyncedPhotos(photos: List<PhotoFile>): List<PhotoFile> {
-        // 先获取服务器上已存在的文件列表
-        val serverFiles = repository.getExistingFiles().getOrNull() ?: emptyMap()
+        if (photos.isEmpty()) return emptyList()
 
-        return photos.filter { photo ->
-            val localSynced = repository.isFileSyncedByNameAndSize(photo.name, photo.size)
-            if (localSynced) {
-                // 本地记录已同步，但服务器文件可能已被删除
-                // 检查服务器是否真的有这个文件
-                val serverHasFile = serverFiles.containsKey(photo.name)
-                if (!serverHasFile) {
-                    android.util.Log.d("SyncPhotos", "File ${photo.name} marked synced but missing on server, will re-upload")
-                }
-                // 如果服务器没有，则需要重新上传
-                !serverHasFile
+        // ========== 阶段1: name+size 快速过滤（一次网络往返，不计算哈希）==========
+        logScan("Stage 1: checking ${photos.size} files by name+size...")
+        val nameSizeItems = photos.mapNotNull { photo ->
+            if (photo.name.isNullOrBlank()) null
+            else FileNameSizeItem(photo.name, photo.size)
+        }
+        val nameSizeResult = repository.checkFilesByNamesOnServer(nameSizeItems)
+
+        val nameSizeExists = nameSizeResult.getOrNull() ?: emptyMap()
+        val definitelySynced = mutableSetOf<String>()  // name_size keys that exist on Server
+        val needHashCheck = mutableListOf<PhotoFile>()  // name+size not found, need SHA256
+
+        photos.forEach { photo ->
+            val key = "${photo.name}_${photo.size}"
+            if (nameSizeExists[key] == true) {
+                definitelySynced.add(key)
             } else {
-                true // 本地没记录，需要上传
+                needHashCheck.add(photo)
             }
+        }
+
+        logScan("Stage 1 result: ${definitelySynced.size} confirmed synced, ${needHashCheck.size} need hash check (of ${photos.size} total)")
+
+        // 如果全部已在 Server，直接返回空
+        if (needHashCheck.isEmpty()) {
+            return emptyList()
+        }
+
+        // ========== 阶段2: 对可能需要上传的文件计算 SHA256 并确认 ==========
+        logScan("Stage 2: computing SHA256 for ${needHashCheck.size} files...")
+        val photosWithHash = mutableListOf<Pair<PhotoFile, String>>()
+        val total = needHashCheck.size
+
+        for ((index, photo) in needHashCheck.withIndex()) {
+            if (photo.name.isNullOrBlank()) continue
+            val hash = computeSha256(photo.contentUri)
+            if (hash.isNotEmpty()) {
+                photosWithHash.add(photo to hash)
+            }
+            // 每 10 张打印一次进度
+            if ((index + 1) % 10 == 0 || index == total - 1) {
+                logScan("Stage 2 hash progress: ${index + 1}/$total")
+            }
+        }
+
+        if (photosWithHash.isEmpty()) {
+            return emptyList()
+        }
+
+        // 用 SHA256 精确确认（可能 name+size 相同但内容不同，或 Server 漏存的）
+        val checkItems = photosWithHash.map { (photo, hash) -> FileCheckItem(photo.name, photo.size, hash) }
+        val hashResult = repository.checkFilesOnServer(checkItems)
+        val hashExists = hashResult.getOrNull() ?: emptyMap()
+
+        return photosWithHash.filter { (photo, hash) ->
+            val result = hashExists[hash]
+            when {
+                result == null -> {
+                    // hash 查询没返回（网络问题），降级：传 name+size 都不存在才上传
+                    logScan("Hash check returned null for ${photo.name}, falling back to name+size")
+                    val key = "${photo.name}_${photo.size}"
+                    definitelySynced.add(key)
+                    false
+                }
+                result.exists -> {
+                    // Server 有，跳过
+                    false
+                }
+                else -> {
+                    // Server 没有，需要上传
+                    true
+                }
+            }
+        }.map { (photo, hash) -> photo.copy(hash = hash) }
+    }
+
+    /**
+     * 流式计算文件的 SHA256（分块读取，恒定 ~64KB 内存）
+     */
+    private fun computeSha256(uri: android.net.Uri): String {
+        return try {
+            val digest = MessageDigest.getInstance("SHA256")
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                val buffer = ByteArray(65536)
+                var bytesRead: Int
+                while (input.read(buffer).also { bytesRead = it } != -1) {
+                    digest.update(buffer, 0, bytesRead)
+                }
+            }
+            digest.digest().joinToString("") { "%02x".format(it.toInt()) }
+        } catch (e: Exception) {
+            logScan("computeSha256 failed for $uri: ${e.message}")
+            ""
         }
     }
 
@@ -152,18 +258,19 @@ class SyncPhotosUseCase @Inject constructor(
         val total = unsyncedPhotos.size
 
         if (total == 0) {
-            emit(SyncState.Completed)
+            emit(SyncState.AllSynced)
             return@flow
         }
 
         emit(SyncState.Uploading)
         var successCount = 0
         var failCount = 0
+        val failedFileNames = mutableListOf<String>()
 
         unsyncedPhotos.forEachIndexed { index, photo ->
             emit(SyncState.Progress(index + 1, total))
 
-            val result = repository.uploadPhotoFromUri(
+            val result = repository.uploadPhotoResumable(
                 contentUri = photo.contentUri,
                 fileName = photo.name,
                 size = photo.size,
@@ -174,13 +281,16 @@ class SyncPhotosUseCase @Inject constructor(
             if (result.isSuccess) {
                 successCount++
             } else {
-                android.util.Log.e("SyncPhotos", "upload failed: ${result.exceptionOrNull()?.message}")
+                logScan("upload failed: ${result.exceptionOrNull()?.message}")
                 failCount++
+                failedFileNames.add(photo.name)
             }
+            // 每张照片处理完后主动回收内存，避免多张照片叠加导致 OOM
+            System.gc()
         }
 
         if (failCount > 0) {
-            emit(SyncState.Error("上传完成: $successCount 成功, $failCount 失败"))
+            emit(SyncState.Error("上传完成: $successCount 成功, $failCount 失败", failedFileNames))
         } else {
             emit(SyncState.Completed)
         }
