@@ -284,8 +284,8 @@ private fun GalleryContent(
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
+        contentPadding = PaddingValues(vertical = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
         groups.forEach { group ->
             item(key = group.date) {
@@ -319,7 +319,7 @@ private fun GalleryDateSection(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
+                .padding(horizontal = 16.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
@@ -351,10 +351,10 @@ private fun GalleryDateSection(
             columns = GridCells.Fixed(3),
             modifier = Modifier
                 .fillMaxWidth()
-                .height(((group.photos.size / 3 + if (group.photos.size % 3 > 0) 1 else 0) * 130).dp)
-                .padding(horizontal = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
+                .height(((group.photos.size / 3 + if (group.photos.size % 3 > 0) 1 else 0) * 118).dp)
+                .padding(horizontal = 2.dp),
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
             userScrollEnabled = false
         ) {
             items(group.photos, key = { it.id }) { photo ->
