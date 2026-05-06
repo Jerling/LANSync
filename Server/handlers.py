@@ -11,7 +11,14 @@ from storage import PhotoStorage, SUPPORTED_EXTS, VIDEO_EXTS
 logger = logging.getLogger(__name__)
 
 
-def setup_routes(app, photo_storage: PhotoStorage, config: dict):
+def _get_storage(config: dict):
+    """获取当前用户对应的存储实例"""
+    base_dir = config["storage"]["base_dir"]
+    username = request.user
+    return PhotoStorage.get_instance(base_dir, username)
+
+
+def setup_routes(app, config: dict):
     """配置所有路由"""
 
     # ==================== 认证相关 ====================
@@ -59,7 +66,8 @@ def setup_routes(app, photo_storage: PhotoStorage, config: dict):
     @auth_required
     def get_sync_status():
         """获取同步状态"""
-        stats = photo_storage.get_storage_stats()
+        storage = _get_storage(config)
+        stats = storage.get_storage_stats()
         return jsonify({
             "status": "ready",
             "username": request.user,
@@ -90,8 +98,9 @@ def setup_routes(app, photo_storage: PhotoStorage, config: dict):
         original_name = secure_filename(file.filename)
         file_data = file.read()
 
+        storage = _get_storage(config)
         try:
-            result = photo_storage.save_photo(file_data, original_name, timestamp)
+            result = storage.save_photo(file_data, original_name, timestamp)
             logger.info(f"File uploaded: {original_name} ({result['type']}) by {request.user} from {device_id}")
             return jsonify({
                 "success": True,
@@ -120,6 +129,7 @@ def setup_routes(app, photo_storage: PhotoStorage, config: dict):
             return jsonify({"error": "No files selected"}), 400
 
         device_id = request.form.get("device_id", "unknown")
+        storage = _get_storage(config)
         results = []
         errors = []
 
@@ -129,7 +139,7 @@ def setup_routes(app, photo_storage: PhotoStorage, config: dict):
             timestamp = request.form.get(f"timestamp_{file.filename}", type=int)
             original_name = secure_filename(file.filename)
             try:
-                result = photo_storage.save_photo(file.read(), original_name, timestamp)
+                result = storage.save_photo(file.read(), original_name, timestamp)
                 results.append({
                     "original_name": original_name,
                     "saved_path": result["path"],
@@ -153,25 +163,24 @@ def setup_routes(app, photo_storage: PhotoStorage, config: dict):
     @auth_required
     def get_existing_files():
         """获取已存在的文件列表（用于增量同步）"""
-        files = photo_storage.list_existing_files()
-        return jsonify({"success": True, "count": len(files) - 1, "files": files})
+        storage = _get_storage(config)
+        files = storage.list_existing_files()
+        # 不再需要 -1 扣除 __index__，因为 __index__ 现在在 user manifest 里
+        return jsonify({"success": True, "count": len(files), "files": files})
 
     @app.route("/api/sync/check-by-names", methods=["POST"])
     @auth_required
     def check_files_by_names():
-        """基于 name+size 快速检查文件是否存在（不计算哈希，适合首次过滤）
-
-        请求体: { "files": [ { "name": "xxx.jpg", "size": 1234 }, ... ] }
-        响应:   { "success": true, "results": { "xxx.jpg_1234": true/false } }
-        """
+        """基于 name+size 快速检查文件是否存在（不计算哈希，适合首次过滤）"""
         data = request.get_json()
         if not data or "files" not in data:
             return jsonify({"error": "files list required"}), 400
 
         files = data["files"]
-        # 加载 manifest 并构建内存中的 (name, size) -> hash 反向索引
-        manifest = photo_storage._load_manifest()
+        storage = _get_storage(config)
+        manifest = storage._load_manifest()
         name_size_index = {}
+
         for hash_key, entries in manifest.items():
             if not isinstance(hash_key, str) or len(hash_key) != 64:
                 continue
@@ -194,17 +203,14 @@ def setup_routes(app, photo_storage: PhotoStorage, config: dict):
     @app.route("/api/sync/check", methods=["POST"])
     @auth_required
     def check_files():
-        """批量检查文件是否已存在（基于内容哈希）
-
-        请求体: { "files": [ { "name": "xxx.jpg", "size": 1234, "hash": "sha256..." }, ... ] }
-        响应:   { "success": true, "results": { "sha256...": { "exists": true/false, "server_name": "..." } } }
-        """
+        """批量检查文件是否已存在（基于内容哈希）"""
         data = request.get_json()
         if not data or "files" not in data:
             return jsonify({"error": "files list required"}), 400
 
         files = data["files"]
-        manifest = photo_storage._load_manifest()
+        storage = _get_storage(config)
+        manifest = storage._load_manifest()
 
         results = {}
         for item in files:
@@ -213,31 +219,26 @@ def setup_routes(app, photo_storage: PhotoStorage, config: dict):
             size = item.get("size", 0)
 
             if not file_hash or len(file_hash) != 64:
-                # 没有提供有效哈希，尝试用 (name, size) 匹配
                 key = (name, size)
                 index = manifest.get("__index__", {})
                 matched_hash = index.get(key) if isinstance(index, dict) else None
                 if matched_hash and matched_hash in manifest:
+                    entry = manifest[matched_hash]
                     results[file_hash or f"{name}_{size}"] = {
                         "exists": True,
-                        "server_name": manifest[matched_hash].get("original_name", name)
+                        "server_name": entry[0].get("original_name", name) if isinstance(entry, list) else entry.get("original_name", name)
                     }
                 else:
                     results[file_hash or f"{name}_{size}"] = {"exists": False}
                 continue
 
-            # 新格式: manifest[hash] -> dict (单个文件信息，不是列表)
-            # 注意: manifest.get(hash, []) 返回空 dict {} 时，if dict 是 truthy！
-            #     但旧代码用 entries[0] 期望列表格式，会导致 KeyError
-            #     当前实际存储是 dict，直接取值即可
             if file_hash in manifest:
                 entry = manifest[file_hash]
                 results[file_hash] = {
                     "exists": True,
-                    "server_name": entry.get("original_name", "") if isinstance(entry, dict) else ""
+                    "server_name": entry[0].get("original_name", "") if isinstance(entry, list) else entry.get("original_name", "")
                 }
             else:
-                # hash 不在 manifest，降级用 name+size 查找
                 name_size_index = manifest.get("__index__", {})
                 key = (name, size)
                 matched_hash = name_size_index.get(key) if isinstance(name_size_index, dict) else None
@@ -245,7 +246,7 @@ def setup_routes(app, photo_storage: PhotoStorage, config: dict):
                     entry = manifest[matched_hash]
                     results[file_hash] = {
                         "exists": True,
-                        "server_name": entry.get("original_name", name) if isinstance(entry, dict) else name
+                        "server_name": entry[0].get("original_name", name) if isinstance(entry, list) else entry.get("original_name", name)
                     }
                 else:
                     results[file_hash] = {"exists": False}
@@ -273,9 +274,9 @@ def setup_routes(app, photo_storage: PhotoStorage, config: dict):
         if f".{ext}" not in SUPPORTED_EXTS:
             return jsonify({"error": f"Unsupported file type: .{ext}"}), 400
 
-        timestamp = data.get("timestamp")
-        result = photo_storage.init_partial_upload(file_id, total_size, original_name)
-        logger.info(f"Partial upload init: {original_name} ({file_id}), already have {result['uploaded_size']}/{total_size} bytes")
+        storage = _get_storage(config)
+        result = storage.init_partial_upload(file_id, total_size, original_name)
+        logger.info(f"[{request.user}] Partial upload init: {original_name} ({file_id}), already have {result['uploaded_size']}/{total_size} bytes")
 
         return jsonify({
             "success": True,
@@ -294,11 +295,12 @@ def setup_routes(app, photo_storage: PhotoStorage, config: dict):
         if "chunk" not in request.files:
             return jsonify({"error": "No chunk part"}), 400
 
+        storage = _get_storage(config)
         chunk = request.files["chunk"]
         chunk_data = chunk.read()
-        result = photo_storage.append_partial(file_id, chunk_data)
+        result = storage.append_partial(file_id, chunk_data)
 
-        meta_path = photo_storage.get_partial_path(file_id).with_suffix(".meta")
+        meta_path = storage.get_partial_path(file_id).with_suffix(".meta")
         total_size = 0
         if meta_path.exists():
             import json as _json
@@ -309,7 +311,7 @@ def setup_routes(app, photo_storage: PhotoStorage, config: dict):
             except Exception:
                 pass
 
-        logger.debug(f"Chunk appended for {file_id}: {result['uploaded_size']}/{total_size}")
+        logger.debug(f"[{request.user}] Chunk appended for {file_id}: {result['uploaded_size']}/{total_size}")
 
         return jsonify({
             "success": True,
@@ -332,7 +334,8 @@ def setup_routes(app, photo_storage: PhotoStorage, config: dict):
         timestamp = data.get("timestamp")
         if timestamp:
             import json as _json
-            partial_path = photo_storage.get_partial_path(file_id)
+            storage = _get_storage(config)
+            partial_path = storage.get_partial_path(file_id)
             meta_path = partial_path.with_suffix(".meta")
             if meta_path.exists():
                 try:
@@ -344,9 +347,10 @@ def setup_routes(app, photo_storage: PhotoStorage, config: dict):
                 except Exception:
                     pass
 
+        storage = _get_storage(config)
         try:
-            result = photo_storage.complete_partial_upload(file_id)
-            logger.info(f"Partial upload completed: {result['original_name']} by {request.user}")
+            result = storage.complete_partial_upload(file_id)
+            logger.info(f"[{request.user}] Partial upload completed: {result['original_name']}")
             return jsonify({"success": True, "data": result})
         except FileNotFoundError as e:
             return jsonify({"error": str(e)}), 404
@@ -361,7 +365,8 @@ def setup_routes(app, photo_storage: PhotoStorage, config: dict):
         if not file_id:
             return jsonify({"error": "file_id required"}), 400
 
-        result = photo_storage.get_partial_status(file_id)
+        storage = _get_storage(config)
+        result = storage.get_partial_status(file_id)
         return jsonify({"success": True, "data": result})
 
     @app.route("/api/upload/resume/cancel", methods=["POST"])
@@ -376,8 +381,9 @@ def setup_routes(app, photo_storage: PhotoStorage, config: dict):
         if not file_id:
             return jsonify({"error": "file_id required"}), 400
 
-        result = photo_storage.cancel_partial_upload(file_id)
-        logger.info(f"Partial upload cancelled: {file_id}")
+        storage = _get_storage(config)
+        result = storage.cancel_partial_upload(file_id)
+        logger.info(f"[{request.user}] Partial upload cancelled: {file_id}")
         return jsonify({"success": True, "removed": result["removed"]})
 
     # ==================== 云相册 ====================
@@ -387,14 +393,15 @@ def setup_routes(app, photo_storage: PhotoStorage, config: dict):
     def gallery_list():
         """获取所有照片列表，按日期分组"""
         try:
-            result = photo_storage.get_gallery_list()
+            storage = _get_storage(config)
+            result = storage.get_gallery_list()
             return jsonify({
                 "success": True,
                 "groups": result["groups"],
                 "total_count": result["total_count"],
             })
         except Exception as e:
-            logger.error(f"gallery_list failed: {e}")
+            logger.error(f"[{request.user}] gallery_list failed: {e}")
             return jsonify({"error": str(e)}), 500
 
     @app.route("/api/gallery/thumb/<path:thumb_id>", methods=["GET"])
@@ -402,8 +409,9 @@ def setup_routes(app, photo_storage: PhotoStorage, config: dict):
     def gallery_thumb(thumb_id: str):
         """获取缩略图"""
         normalized = thumb_id.replace("\\", "/")
+        storage = _get_storage(config)
         try:
-            thumb_info = photo_storage.generate_thumbnail(normalized)
+            thumb_info = storage.generate_thumbnail(normalized)
             thumb_path = Path(thumb_info["thumb_path"])
             from flask import send_file
             return send_file(thumb_path, mimetype="image/jpeg")
@@ -412,14 +420,15 @@ def setup_routes(app, photo_storage: PhotoStorage, config: dict):
         except ValueError:
             return jsonify({"error": "No thumbnail for video"}), 404
         except Exception as e:
-            logger.error(f"gallery_thumb failed for {thumb_id}: {e}")
+            logger.error(f"[{request.user}] gallery_thumb failed for {thumb_id}: {e}")
             return jsonify({"error": str(e)}), 500
 
     @app.route("/api/gallery/photo/<path:photo_path>", methods=["GET"])
     @auth_required
     def gallery_photo(photo_path: str):
         """获取原图"""
-        full_path = photo_storage.base_dir / photo_path
+        storage = _get_storage(config)
+        full_path = storage.user_dir / photo_path
         if not full_path.exists():
             return jsonify({"error": "Photo not found"}), 404
 
@@ -450,10 +459,11 @@ def setup_routes(app, photo_storage: PhotoStorage, config: dict):
         if not isinstance(data["paths"], list):
             return jsonify({"error": "paths must be a list"}), 400
         try:
-            result = photo_storage.delete_photos(data["paths"])
+            storage = _get_storage(config)
+            result = storage.delete_photos(data["paths"])
             return jsonify({"success": True, **result})
         except Exception as e:
-            logger.error(f"gallery_delete failed: {e}")
+            logger.error(f"[{request.user}] gallery_delete failed: {e}")
             return jsonify({"error": str(e)}), 500
 
     @app.route("/api/gallery/rename", methods=["POST"])
@@ -464,7 +474,8 @@ def setup_routes(app, photo_storage: PhotoStorage, config: dict):
         if not data or "path" not in data or "new_name" not in data:
             return jsonify({"error": "path and new_name required"}), 400
         try:
-            result = photo_storage.rename_photo(data["path"], data["new_name"])
+            storage = _get_storage(config)
+            result = storage.rename_photo(data["path"], data["new_name"])
             return jsonify({"success": True, **result})
         except FileNotFoundError as e:
             return jsonify({"error": str(e)}), 404
@@ -473,7 +484,7 @@ def setup_routes(app, photo_storage: PhotoStorage, config: dict):
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
         except Exception as e:
-            logger.error(f"gallery_rename failed: {e}")
+            logger.error(f"[{request.user}] gallery_rename failed: {e}")
             return jsonify({"error": str(e)}), 500
 
     # ==================== 健康检查 ====================

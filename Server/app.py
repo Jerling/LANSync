@@ -9,7 +9,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from flask import Flask
-from storage import PhotoStorage
 from handlers import setup_routes
 
 def setup_logging(log_file: str, log_level: str):
@@ -46,15 +45,11 @@ def create_app(config_path: str = "config.yaml"):
     max_size = cfg["storage"].get("max_file_size_mb", 500)
     app.config["MAX_CONTENT_LENGTH"] = max_size * 1024 * 1024
     
-    # 初始化存储
-    storage_base = cfg["storage"]["base_dir"]
-    photo_storage = PhotoStorage(storage_base)
-    
-    # 注册路由
-    setup_routes(app, photo_storage, cfg)
-    
+    # 注册路由（storage 实例在请求时按用户创建）
+    setup_routes(app, cfg)
+
     logger.info(f"LANSync Server started on {cfg['server']['host']}:{cfg['server']['port']}")
-    logger.info(f"Storage base directory: {storage_base}")
+    logger.info(f"Storage base directory: {cfg['storage']['base_dir']}")
     
     return app
 
