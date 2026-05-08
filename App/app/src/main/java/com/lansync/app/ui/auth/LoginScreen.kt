@@ -29,16 +29,19 @@ fun LoginScreen(
 
     var username by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
+    var serverUrl by remember { mutableStateOf("") }
     var passwordVisible by remember { mutableStateOf(false) }
 
     // 启动时加载保存的账号密码，并自动登录
     LaunchedEffect(Unit) {
         val savedUser = uiState.savedUsername
         val savedPass = uiState.savedPassword
+        val savedUrl = uiState.savedServerUrl
         if (savedUser.isNotBlank() && savedPass.isNotBlank()) {
             username = savedUser
             password = savedPass
-            viewModel.login(savedUser, savedPass)
+            serverUrl = savedUrl
+            viewModel.login(savedUser, savedPass, savedUrl)
         }
     }
 
@@ -55,7 +58,6 @@ fun LoginScreen(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        // Logo / Title
         Text(
             text = "LANSync",
             style = MaterialTheme.typography.headlineLarge,
@@ -71,6 +73,26 @@ fun LoginScreen(
         )
 
         Spacer(modifier = Modifier.height(48.dp))
+
+        // 服务器地址（可选）
+        OutlinedTextField(
+            value = serverUrl,
+            onValueChange = { serverUrl = it },
+            label = { Text("服务器地址（可选）") },
+            placeholder = { Text("如 http://192.168.1.100:8765") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+            keyboardOptions = KeyboardOptions(
+                keyboardType = KeyboardType.Uri,
+                imeAction = ImeAction.Next
+            ),
+            keyboardActions = KeyboardActions(
+                onNext = { focusManager.moveFocus(FocusDirection.Down) }
+            ),
+            enabled = !uiState.isLoading
+        )
+
+        Spacer(modifier = Modifier.height(16.dp))
 
         // Username field
         OutlinedTextField(
@@ -111,7 +133,7 @@ fun LoginScreen(
                 onDone = {
                     focusManager.clearFocus()
                     if (username.isNotBlank() && password.isNotBlank()) {
-                        viewModel.login(username, password)
+                        viewModel.login(username, password, serverUrl)
                     }
                 }
             ),
@@ -144,7 +166,7 @@ fun LoginScreen(
 
         // Login button
         Button(
-            onClick = { viewModel.login(username, password) },
+            onClick = { viewModel.login(username, password, serverUrl) },
             modifier = Modifier
                 .fillMaxWidth()
                 .height(50.dp),

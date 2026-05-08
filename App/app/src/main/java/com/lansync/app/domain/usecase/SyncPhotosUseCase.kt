@@ -269,6 +269,7 @@ class SyncPhotosUseCase @Inject constructor(
 
         unsyncedPhotos.forEachIndexed { index, photo ->
             emit(SyncState.Progress(index + 1, total))
+            logScan(">>> UPLOAD_START: index=${index + 1}/$total name=${photo.name} size=${photo.size} uri=${photo.contentUri}")
 
             val result = repository.uploadPhotoResumable(
                 contentUri = photo.contentUri,
@@ -280,8 +281,9 @@ class SyncPhotosUseCase @Inject constructor(
 
             if (result.isSuccess) {
                 successCount++
+                logScan("<<< UPLOAD_SUCCESS: name=${photo.name}")
             } else {
-                logScan("upload failed: ${result.exceptionOrNull()?.message}")
+                logScan("<<< UPLOAD_FAILED: name=${photo.name} error=${result.exceptionOrNull()?.message}")
                 failCount++
                 failedFileNames.add(photo.name)
             }

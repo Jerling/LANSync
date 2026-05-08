@@ -8,10 +8,10 @@ import java.util.concurrent.TimeUnit
 
 object ApiClient {
 
-    private const val DEFAULT_TIMEOUT = 30L
+    private const val DEFAULT_TIMEOUT = 300L
 
     // TODO: 后续从设置界面配置服务器地址
-    private const val DEFAULT_BASE_URL = "http://192.168.0.107:8765/"
+    private const val DEFAULT_BASE_URL = "http://192.168.0.108:8765/"
 
     private var baseUrl: String = DEFAULT_BASE_URL
     private var authToken: String? = null
