@@ -2,6 +2,7 @@ package com.lansync.app.ui.auth
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.lansync.app.data.api.ApiClient
 import com.lansync.app.data.local.TokenManager
 import com.lansync.app.domain.model.LoginResponse
 import com.lansync.app.domain.usecase.LoginUseCase
@@ -18,7 +19,8 @@ data class LoginUiState(
     val error: String? = null,
     val isLoggedIn: Boolean = false,
     val savedUsername: String = "",
-    val savedPassword: String = ""
+    val savedPassword: String = "",
+    val savedServerUrl: String = ""
 )
 
 @HiltViewModel
@@ -38,22 +40,29 @@ class LoginViewModel @Inject constructor(
         viewModelScope.launch {
             val savedUsername = tokenManager.usernameFlow.first() ?: ""
             val savedPassword = tokenManager.getPassword() ?: ""
+            val savedServerUrl = tokenManager.serverUrlFlow.first() ?: ""
             _uiState.value = _uiState.value.copy(
                 savedUsername = savedUsername,
-                savedPassword = savedPassword
+                savedPassword = savedPassword,
+                savedServerUrl = savedServerUrl
             )
         }
     }
 
-    fun login(username: String, password: String) {
+    fun login(username: String, password: String, serverUrl: String = "") {
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoading = true, error = null)
+
+            // 如果用户输入了服务器地址则应用
+            if (serverUrl.isNotBlank()) {
+                ApiClient.setBaseUrl(serverUrl)
+                tokenManager.saveServerUrl(serverUrl)
+            }
 
             val result = loginUseCase(username, password)
 
             result.fold(
                 onSuccess = { response ->
-                    // 保存用户名和密码
                     tokenManager.saveUsername(username)
                     tokenManager.savePassword(password)
                     _uiState.value = _uiState.value.copy(
@@ -61,7 +70,8 @@ class LoginViewModel @Inject constructor(
                         isLoggedIn = true,
                         error = null,
                         savedUsername = username,
-                        savedPassword = password
+                        savedPassword = password,
+                        savedServerUrl = serverUrl
                     )
                 },
                 onFailure = { exception ->

@@ -9,7 +9,7 @@ auth:
   token_expire_hours: 720  # 30 days
 
 storage:
-  base_dir: "D:/Photos"
+  base_dir: "/home/jer/data/Photos"
   max_file_size_mb: 2048
 
 users:

@@ -4,7 +4,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.PhotoLibrary
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -17,13 +16,11 @@ import androidx.navigation.compose.rememberNavController
 import com.lansync.app.ui.auth.LoginScreen
 import com.lansync.app.ui.gallery.GalleryScreen
 import com.lansync.app.ui.home.HomeScreen
-import com.lansync.app.ui.settings.SettingsScreen
 
 sealed class Screen(val route: String) {
     object Login : Screen("login")
     object Home : Screen("home")
     object Gallery : Screen("gallery")
-    object Settings : Screen("settings")
 }
 
 data class BottomNavItem(
@@ -34,8 +31,7 @@ data class BottomNavItem(
 
 val bottomNavItems = listOf(
     BottomNavItem(Screen.Home, Icons.Default.Home, "同步"),
-    BottomNavItem(Screen.Gallery, Icons.Default.PhotoLibrary, "云相册"),
-    BottomNavItem(Screen.Settings, Icons.Default.Settings, "设置")
+    BottomNavItem(Screen.Gallery, Icons.Default.PhotoLibrary, "云相册")
 )
 
 @Composable
@@ -45,8 +41,7 @@ fun LANSyncNavHost(
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = navBackStackEntry?.destination?.route
 
-    // 是否显示底部导航（登录页不显示）
-    val showBottomBar = currentRoute in listOf(Screen.Home.route, Screen.Gallery.route, Screen.Settings.route)
+    val showBottomBar = currentRoute in listOf(Screen.Home.route, Screen.Gallery.route)
 
     Scaffold(
         bottomBar = {
@@ -89,9 +84,6 @@ fun LANSyncNavHost(
 
             composable(Screen.Home.route) {
                 HomeScreen(
-                    onNavigateToSettings = {
-                        navController.navigate(Screen.Settings.route)
-                    },
                     onLogout = {
                         navController.navigate(Screen.Login.route) {
                             popUpTo(0) { inclusive = true }
@@ -102,14 +94,6 @@ fun LANSyncNavHost(
 
             composable(Screen.Gallery.route) {
                 GalleryScreen()
-            }
-
-            composable(Screen.Settings.route) {
-                SettingsScreen(
-                    onNavigateBack = {
-                        navController.popBackStack()
-                    }
-                )
             }
         }
     }

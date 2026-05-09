@@ -25,7 +25,6 @@ import com.lansync.app.domain.model.SyncState
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
-    onNavigateToSettings: () -> Unit,
     onLogout: () -> Unit,
     viewModel: HomeViewModel = hiltViewModel()
 ) {
@@ -66,9 +65,6 @@ fun HomeScreen(
             TopAppBar(
                 title = { Text("LANSync") },
                 actions = {
-                    IconButton(onClick = onNavigateToSettings) {
-                        Icon(Icons.Default.Settings, contentDescription = "设置")
-                    }
                     IconButton(onClick = {
                         viewModel.logout()
                         onLogout()
