@@ -1,15 +1,15 @@
 <template>
-  <div class="gallery-page" :class="{ selecting: rawSelecting }">
-    <!-- Top Bar -->
+  <div class="gallery-page">
+    <!-- Top Bar — only this part uses Vue reactivity during selection -->
     <header class="top-bar">
-      <template v-if="rawSelecting">
+      <template v-if="selecting">
         <button class="btn-icon" @click="exitSelection">
           <span>✕</span>
         </button>
-        <span class="selected-count">{{ rawSelected.size }} 已选中</span>
+        <span class="selected-count">{{ selectedCount }} 已选中</span>
         <div class="top-actions">
-          <button v-if="rawSelected.size === 1" class="btn-text" @click="previewSelectedIds">预览</button>
-          <button class="btn-text" @click="toggleSelectAll">{{ rawSelected.size === allIds.length ? '取消全选' : '全选' }}</button>
+          <button v-if="selectedCount === 1" class="btn-text" @click="previewSelectedIds">预览</button>
+          <button class="btn-text" @click="toggleSelectAll">{{ selectedCount === totalCount && totalCount > 0 ? '取消全选' : '全选' }}</button>
           <button class="btn-text btn-danger-text" @click="showDeleteDialog = true">删除</button>
         </div>
       </template>
@@ -41,8 +41,16 @@
       <p class="empty-hint">点击右上角 + 上传照片</p>
     </div>
 
-    <!-- Gallery Groups — no Vue reactivity on individual items -->
-    <div v-else class="groups" @click="onGalleryClick">
+    <!--
+      Gallery grid: selecting state is CSS-driven via container class.
+      No Vue reactivity on individual photo items — all selection is pure JS + CSS.
+    -->
+    <div
+      v-else
+      class="groups"
+      :class="{ 'is-selecting': selecting }"
+      @click="onGalleryClick"
+    >
       <div v-for="group in groups" :key="group.date" class="group">
         <div class="group-header">{{ group.date }}</div>
         <div class="photos">
@@ -51,6 +59,7 @@
             :key="photo.id"
             class="photo-item"
             :data-id="photo.id"
+            :data-selected="isSelected(photo.id)"
           >
             <img
               :src="getThumbnailUrl(photo)"
@@ -80,7 +89,7 @@
     <div v-if="showDeleteDialog" class="dialog-overlay">
       <div class="dialog">
         <h3>删除照片</h3>
-        <p>确定删除这 {{ rawSelected.size }} 张照片？</p>
+        <p>确定删除这 {{ selectedCount }} 张照片？</p>
         <div class="dialog-actions">
           <button class="btn-danger" @click="confirmDelete">删除</button>
           <button @click="showDeleteDialog = false">取消</button>
@@ -116,7 +125,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { api, type GalleryGroup, type GalleryPhoto } from '../api/client'
 
@@ -143,81 +152,61 @@ const showDeleteDialog = ref(false)
 // --- Preview ---
 const previewPhoto = ref<(GalleryPhoto & { url: string }) | null>(null)
 
-// --- Selection state: PLAIN JS, no Vue reactivity ---
-// This is intentional — Vue reactivity on thousands of items freezes Safari
-let _rawSelected = new Set<string>()
-let _rawSelecting = false
+// --- Selection: ONLY these are reactive ---
+const selecting = ref(false)
+const selectedIds = ref(new Set<string>())
 
-const rawSelected = new Set<string>() // proxy via ref for read-only
-const rawSelecting = ref(false)
+const selectedCount = computed(() => selectedIds.value.size)
+const totalCount = computed(() => groups.value.reduce((sum, g) => sum + g.photos.length, 0))
 
-function syncRawState() {
-  // Force update the fake reactive proxy
-  ;(rawSelected as any).value = new Set(_rawSelected)
-  ;(rawSelecting as any).value = _rawSelecting
+function isSelected(id: string): string {
+  return selectedIds.value.has(id) ? 'true' : 'false'
 }
 
-function allIds() {
-  return groups.value.flatMap(g => g.photos.map(p => p.id))
-}
-
-// --- DOM event delegation ---
+// --- DOM event delegation (single handler on container) ---
 function onGalleryClick(e: MouseEvent) {
   const target = (e.target as HTMLElement).closest('.photo-item') as HTMLElement | null
   if (!target) return
   const id = target.dataset['id']
   if (!id) return
 
-  if (!_rawSelecting) {
-    _rawSelecting = true
-    _rawSelected.add(id)
-    syncRawState()
-    updateDomSelection()
+  if (!selecting.value) {
+    selecting.value = true
+    selectedIds.value = new Set([id])
   } else {
-    if (_rawSelected.has(id)) {
-      _rawSelected.delete(id)
-      if (_rawSelected.size === 0) {
-        _rawSelecting = false
+    const s = new Set(selectedIds.value)
+    if (s.has(id)) {
+      s.delete(id)
+      if (s.size === 0) {
+        selecting.value = false
+        selectedIds.value = new Set()
+        return
       }
     } else {
-      _rawSelected.add(id)
+      s.add(id)
     }
-    syncRawState()
-    updateDomSelection()
+    selectedIds.value = s
   }
-}
-
-function updateDomSelection() {
-  document.querySelectorAll('.photo-item').forEach(el => {
-    const id = (el as HTMLElement).dataset['id']!
-    el.classList.toggle('selected', _rawSelected.has(id))
-    el.classList.toggle('selecting', _rawSelecting && !_rawSelected.has(id))
-  })
 }
 
 function exitSelection() {
-  _rawSelecting = false
-  _rawSelected.clear()
-  syncRawState()
-  updateDomSelection()
+  selecting.value = false
+  selectedIds.value = new Set()
 }
 
 function toggleSelectAll() {
-  const ids = allIds()
-  if (_rawSelected.size === ids.length) {
-    _rawSelected.clear()
-    _rawSelecting = false
+  if (selectedCount.value === totalCount.value && totalCount.value > 0) {
+    exitSelection()
   } else {
-    _rawSelected = new Set(ids)
-    _rawSelecting = true
+    const allIds = new Set(groups.value.flatMap(g => g.photos.map(p => p.id)))
+    selectedIds.value = allIds
+    selecting.value = true
   }
-  syncRawState()
-  updateDomSelection()
 }
 
 async function previewSelectedIds() {
-  if (_rawSelected.size !== 1) return
-  const id = Array.from(_rawSelected)[0]
+  if (selectedIds.value.size !== 1) return
+  const id = Array.from(selectedIds.value)[0]
   const photo = groups.value.flatMap(g => g.photos).find(p => p.id === id)
   if (!photo) return
   const url = await api.getPhotoUrl(photo.path)
@@ -228,7 +217,7 @@ async function confirmDelete() {
   showDeleteDialog.value = false
   const paths = groups.value
     .flatMap(g => g.photos)
-    .filter(p => _rawSelected.has(p.id))
+    .filter(p => selectedIds.value.has(p.id))
     .map(p => p.path)
 
   let deleted = 0, failed = 0
@@ -439,16 +428,16 @@ onMounted(() => { loadGallery() })
   cursor: pointer;
   background: #eee;
   border-radius: 2px;
-  /* no Vue-driven class changes → safe */
 }
 
+/* Selection is CSS-driven — data-selected attribute is toggled by Vue, classes are static */
 .photo-item img {
   width: 100%;
   height: 100%;
   object-fit: cover;
 }
 
-.photo-item .photo-check {
+.photo-check {
   display: none;
   position: absolute;
   top: 4px;
@@ -463,10 +452,20 @@ onMounted(() => { loadGallery() })
   font-size: 12px;
 }
 
-/* CSS-only selection indicators — no JS class toggling needed for check mark */
-.photo-item.selected .photo-check { display: flex; }
-.photo-item.selected { outline: 3px solid #4f8aff; outline-offset: -2px; }
-.photo-item.selecting { outline: 1px dashed #4f8aff; outline-offset: -1px; }
+/* Show check only when in selection mode AND item is selected */
+.is-selecting .photo-item[data-selected="true"] .photo-check {
+  display: flex;
+}
+
+.is-selecting .photo-item[data-selected="true"] {
+  outline: 3px solid #4f8aff;
+  outline-offset: -2px;
+}
+
+.is-selecting .photo-item {
+  outline: 1px dashed #ccc;
+  outline-offset: -1px;
+}
 
 .preview-modal {
   position: fixed;
