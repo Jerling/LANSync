@@ -16,7 +16,9 @@
       <template v-else>
         <h2>云相册</h2>
         <div class="header-actions">
-          <button class="btn-icon upload-btn" @click="triggerUpload" title="上传照片">+</button>
+          <button class="btn-icon upload-btn" @click="triggerUpload" :title="pendingFiles.length > 0 ? `上传 ${pendingFiles.length} 个文件` : '上传照片'">
+            {{ pendingFiles.length > 0 ? pendingFiles.length : '+' }}
+          </button>
           <button class="btn-icon" @click="loadGallery" title="刷新">↻</button>
           <button class="btn-icon" @click="handleLogout" title="退出">⎋</button>
         </div>
@@ -289,13 +291,23 @@ function showToast(msg: string) {
   setTimeout(() => { toast.value = '' }, 3000)
 }
 
-function triggerUpload() {
-  fileInputRef.value?.click()
+// Store only file references (name + size) immediately after selection
+// Actual file reading happens during upload, so UI never blocks
+const pendingFiles = ref<{ name: string; file: File }[]>([])
+
+function onFilesSelected(e: Event) {
+  const input = e.target as HTMLInputElement
+  const fileList = input.files
+  if (!fileList || fileList.length === 0) return
+
+  // Store only metadata — no file content read yet
+  pendingFiles.value = Array.from(fileList).map(f => ({ name: f.name, file: f }))
+  showToast(`已选择 ${pendingFiles.value.length} 个文件，点击上传`)
+  input.value = '' // reset so same file can be re-selected
 }
 
-async function onFilesSelected(e: Event) {
-  const input = e.target as HTMLInputElement
-  const files = Array.from(input.files || [])
+async function uploadPendingFiles() {
+  const files = pendingFiles.value
   if (files.length === 0) return
 
   uploading.value = true
@@ -305,9 +317,9 @@ async function onFilesSelected(e: Event) {
 
   let success = 0, failed = 0
   for (let i = 0; i < files.length; i++) {
-    const file = files[i]
+    const { name, file } = files[i]
     uploadCurrent.value = i + 1
-    uploadFileName.value = file.name
+    uploadFileName.value = name
     uploadProgress.value = 0
     try {
       await api.uploadPhoto(file, (pct) => { uploadProgress.value = pct })
@@ -319,9 +331,18 @@ async function onFilesSelected(e: Event) {
 
   uploading.value = false
   uploadFileName.value = ''
+  pendingFiles.value = []
   showToast(failed === 0 ? `上传成功 ${success} 张` : `${success} 张成功，${failed} 张失败`)
-  input.value = ''
   if (success > 0) await loadGallery()
+}
+
+// Override triggerUpload to trigger upload if pending, else open file picker
+function triggerUpload() {
+  if (pendingFiles.value.length > 0) {
+    uploadPendingFiles()
+  } else {
+    fileInputRef.value?.click()
+  }
 }
 
 onMounted(() => { loadGallery() })
