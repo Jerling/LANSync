@@ -2,9 +2,9 @@
   <div class="login-page">
     <div class="login-card">
       <h1>LANSync</h1>
-      <p class="subtitle">相册云同步</p>
+      <p class="subtitle">{{ isRegister ? '创建新账户' : '相册云同步' }}</p>
 
-      <form @submit.prevent="handleLogin">
+      <form @submit.prevent="isRegister ? handleRegister() : handleLogin()">
         <div class="field">
           <label>服务器地址</label>
           <input
@@ -12,7 +12,7 @@
             type="url"
             placeholder="http://192.168.0.108:8765"
             required
-            autofocus
+            :disabled="loading"
           />
         </div>
 
@@ -21,8 +21,9 @@
           <input
             v-model="username"
             type="text"
-            placeholder="photosync"
+            placeholder="3位以上字母或数字"
             required
+            :disabled="loading"
           />
         </div>
 
@@ -31,16 +32,37 @@
           <input
             v-model="password"
             type="password"
-            placeholder="••••••"
+            placeholder="6位以上"
             required
+            :disabled="loading"
+          />
+        </div>
+
+        <div v-if="isRegister" class="field">
+          <label>确认密码</label>
+          <input
+            v-model="confirmPassword"
+            type="password"
+            placeholder="再输入一次密码"
+            required
+            :disabled="loading"
           />
         </div>
 
         <p v-if="error" class="error">{{ error }}</p>
 
         <button type="submit" :disabled="loading">
-          {{ loading ? '登录中...' : '登录' }}
+          {{ loading ? (isRegister ? '注册中...' : '登录中...') : (isRegister ? '注册' : '登录') }}
         </button>
+
+        <div class="switch-mode">
+          <template v-if="!isRegister">
+            没有账户？<button type="button" class="link-btn" @click="isRegister = true">立即注册</button>
+          </template>
+          <template v-else>
+            已有账户？<button type="button" class="link-btn" @click="isRegister = false">去登录</button>
+          </template>
+        </div>
       </form>
     </div>
   </div>
@@ -55,8 +77,10 @@ const router = useRouter()
 const serverUrl = ref(api.getBaseUrl() || 'http://192.168.0.108:8765')
 const username = ref('')
 const password = ref('')
+const confirmPassword = ref('')
 const error = ref('')
 const loading = ref(false)
+const isRegister = ref(false)
 
 async function handleLogin() {
   error.value = ''
@@ -66,6 +90,29 @@ async function handleLogin() {
     router.push('/gallery')
   } catch (e: any) {
     error.value = e?.response?.data?.error || '登录失败，请检查服务器地址和账号密码'
+  } finally {
+    loading.value = false
+  }
+}
+
+async function handleRegister() {
+  error.value = ''
+  if (password.value !== confirmPassword.value) {
+    error.value = '两次密码不一致'
+    return
+  }
+  if (password.value.length < 6) {
+    error.value = '密码至少6位'
+    return
+  }
+  loading.value = true
+  try {
+    await api.register(username.value, password.value)
+    // 注册成功后自动登录
+    await api.login(username.value, password.value, serverUrl.value)
+    router.push('/gallery')
+  } catch (e: any) {
+    error.value = e?.response?.data?.error || '注册失败'
   } finally {
     loading.value = false
   }
@@ -131,6 +178,10 @@ h1 {
   border-color: #4f8aff;
 }
 
+.field input:disabled {
+  background: #f5f5f5;
+}
+
 .error {
   color: #e53e3e;
   font-size: 0.85rem;
@@ -157,5 +208,27 @@ button:hover:not(:disabled) {
 button:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+.switch-mode {
+  margin-top: 1.25rem;
+  text-align: center;
+  font-size: 0.85rem;
+  color: #666;
+}
+
+.link-btn {
+  width: auto;
+  background: none;
+  color: #4f8aff;
+  padding: 0;
+  font-size: 0.85rem;
+  display: inline;
+  text-decoration: underline;
+}
+
+.link-btn:hover {
+  background: none;
+  color: #3a7aef;
 }
 </style>

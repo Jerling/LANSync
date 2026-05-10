@@ -87,29 +87,31 @@ class ApiClient {
 
   async login(username: string, password: string, serverUrl: string): Promise<LoginResponse> {
     this.setBaseUrl(serverUrl)
-    const resp = await this.client.post<LoginResponse>('auth/login', { username, password })
+    const resp = await this.client.post<LoginResponse>('api/login', { username, password })
     this.setToken(resp.data.token)
     return resp.data
   }
 
+  async register(username: string, password: string): Promise<void> {
+    await this.client.post('api/register', { username, password })
+  }
+
   async getGallery(): Promise<GalleryGroup[]> {
-    const resp = await this.client.get<GalleryGroup[]>('gallery')
-    return resp.data
+    const resp = await this.client.get<{ success: boolean; groups: GalleryGroup[] }>('api/gallery/list')
+    return resp.data.groups
   }
 
   async deletePhotos(paths: string[]): Promise<DeletePhotosResponse> {
-    const resp = await this.client.post<DeletePhotosResponse>('gallery/delete', { paths })
+    const resp = await this.client.post<DeletePhotosResponse>('api/gallery/delete', { paths })
     return resp.data
   }
 
   async getPhotoUrl(path: string): Promise<string> {
-    const encoded = encodeURIComponent(path)
-    return `${this.baseUrl}gallery/photo?path=${encoded}&token=${this.token}`
+    return `${this.baseUrl}api/gallery/photo/${path}?token=${this.token}`
   }
 
   async downloadPhoto(path: string): Promise<Blob> {
-    const encoded = encodeURIComponent(path)
-    const resp = await axios.get(`${this.baseUrl}gallery/photo?path=${encoded}`, {
+    const resp = await axios.get(`${this.baseUrl}api/gallery/photo/${path}`, {
       headers: { 'Authorization': `Bearer ${this.token}` },
       responseType: 'blob',
     })
@@ -117,14 +119,13 @@ class ApiClient {
   }
 
   async renamePhoto(oldPath: string, newName: string): Promise<void> {
-    const encoded = encodeURIComponent(oldPath)
-    await this.client.post(`gallery/rename?path=${encoded}`, { newName })
+    await this.client.post('api/gallery/rename', { path: oldPath, new_name: newName })
   }
 
   async uploadPhoto(file: File, onProgress?: (pct: number) => void): Promise<void> {
     const formData = new FormData()
     formData.append('file', file)
-    await axios.post(`${this.baseUrl}upload`, formData, {
+    await axios.post(`${this.baseUrl}api/upload`, formData, {
       headers: {
         'Authorization': `Bearer ${this.token}`,
         'Content-Type': 'multipart/form-data',
