@@ -249,17 +249,23 @@ class PhotoStorage:
         # 尝试从 EXIF 读取拍摄时间
         parsed_dt = None
         ext_lower = ext.lower()
-        if ext_lower in (".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif"):
+        is_image = ext_lower in (".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif", ".jpg", ".jpeg")
+        if is_image:
             try:
                 with Image.open(temp_file) as img:
                     exif = img.getexif()
-                    dt_raw = exif.get(36867)  # DateTimeOriginal
-                    if dt_raw:
-                        # EXIF format: "YYYY:MM:DD HH:MM:SS"
-                        dt_str = str(dt_raw)
-                        dt = datetime.strptime(dt_str, "%Y:%m:%d %H:%M:%S")
-                        parsed_dt = dt
-                        logger.debug(f"[{self.username}] EXIF date for '{original_name}': {dt.date()}")
+                    # 尝试多个 EXIF 日期字段
+                    for tag in (36867, 36868, 306):
+                        dt_raw = exif.get(tag)
+                        if dt_raw:
+                            dt_str = str(dt_raw)
+                            try:
+                                dt = datetime.strptime(dt_str, "%Y:%m:%d %H:%M:%S")
+                                parsed_dt = dt
+                                logger.debug(f"[{self.username}] EXIF date (tag={tag}) for '{original_name}': {dt.date()}")
+                                break
+                            except ValueError:
+                                pass
             except Exception as e:
                 logger.debug(f"[{self.username}] Failed to read EXIF from '{original_name}': {e}")
 
