@@ -1,6 +1,9 @@
 <template>
   <div class="login-page">
-    <div class="login-card">
+    <div v-if="checkingSession" class="login-card">
+      <div class="spinner"></div>
+    </div>
+    <div v-else class="login-card">
       <h1>LANSync</h1>
       <p class="subtitle">{{ isRegister ? '创建新账户' : '相册云同步' }}</p>
 
@@ -69,7 +72,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '../api/client'
 
@@ -81,6 +84,15 @@ const confirmPassword = ref('')
 const error = ref('')
 const loading = ref(false)
 const isRegister = ref(false)
+const checkingSession = ref(true)
+
+// 已登录则直接跳转
+onMounted(() => {
+  if (api.isLoggedIn()) {
+    router.push('/gallery')
+  }
+  checkingSession.value = false
+})
 
 async function handleLogin() {
   error.value = ''
@@ -231,4 +243,15 @@ button:disabled {
   background: none;
   color: #3a7aef;
 }
+
+.spinner {
+  width: 36px;
+  height: 36px;
+  border: 3px solid #e0e0e0;
+  border-top-color: #4f8aff;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
 </style>
