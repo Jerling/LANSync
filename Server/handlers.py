@@ -494,18 +494,4 @@ def setup_routes(app, config: dict):
         """健康检查"""
         return jsonify({"status": "healthy", "server_time": datetime.now().isoformat()})
 
-    @app.route("/", methods=["GET"])
-    def index():
-        """首页"""
-        return jsonify({
-            "service": "LANSync Server",
-            "version": "1.0.0",
-            "endpoints": [
-                "POST /api/login",
-                "GET /api/user/info",
-                "GET /api/sync/status",
-                "POST /api/upload/photo",
-                "POST /api/upload/batch",
-                "GET /api/health"
-            ]
-        })
+    # route("/", methods=["GET"]) 已移除，改由 app.py 提供静态文件

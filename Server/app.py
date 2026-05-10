@@ -8,7 +8,7 @@ from pathlib import Path
 # 添加当前目录到 Python 路径
 sys.path.insert(0, str(Path(__file__).parent))
 
-from flask import Flask
+from flask import Flask, send_from_directory
 from handlers import setup_routes
 
 def setup_logging(log_file: str, log_level: str):
@@ -47,6 +47,15 @@ def create_app(config_path: str = "config.yaml"):
     
     # 注册路由（storage 实例在请求时按用户创建）
     setup_routes(app, cfg)
+
+    # 静态文件 + SPA fallback
+    static_dir = Path(__file__).parent / "static"
+    @app.route("/")
+    def serve_index():
+        return send_from_directory(static_dir, "index.html")
+    @app.route("/<path:filename>")
+    def serve_static(filename):
+        return send_from_directory(static_dir, filename)
 
     logger.info(f"LANSync Server started on {cfg['server']['host']}:{cfg['server']['port']}")
     logger.info(f"Storage base directory: {cfg['storage']['base_dir']}")
