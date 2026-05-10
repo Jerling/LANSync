@@ -8,6 +8,7 @@ import hashlib
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+from PIL import Image
 
 logger = logging.getLogger(__name__)
 
@@ -238,23 +239,41 @@ class PhotoStorage:
             }
 
         # 先写到临时目录，再根据文件创建时间归类
-        # 这样即使文件名解析失败，也能用文件的实际创建时间
+        # 优先级: EXIF拍摄时间 > st_mtime > datetime.now()
         temp_dir = self.user_dir / "_pending"
         temp_dir.mkdir(parents=True, exist_ok=True)
         temp_file = temp_dir / original_name
         with open(temp_file, "wb") as f:
             f.write(file_data)
 
-        # 尝试从文件名解析日期；失败则用文件的 st_ctime
-        parsed_dt = self._parse_date_from_name(original_name)
-        if parsed_dt is not None:
-            date_path = self.user_dir / f"{parsed_dt.year}" / f"{parsed_dt.month:02d}" / f"{parsed_dt.day:02d}"
-        else:
-            ctime = temp_file.stat().st_ctime
-            dt = datetime.fromtimestamp(ctime)
-            date_path = self.user_dir / f"{dt.year}" / f"{dt.month:02d}" / f"{dt.day:02d}"
-            logger.debug(f"[{self.username}] Could not parse date from '{original_name}', using st_ctime: {dt.date()}")
+        # 尝试从 EXIF 读取拍摄时间
+        parsed_dt = None
+        ext_lower = ext.lower()
+        if ext_lower in (".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif"):
+            try:
+                with Image.open(temp_file) as img:
+                    exif = img.getexif()
+                    dt_raw = exif.get(36867)  # DateTimeOriginal
+                    if dt_raw:
+                        # EXIF format: "YYYY:MM:DD HH:MM:SS"
+                        dt_str = str(dt_raw)
+                        dt = datetime.strptime(dt_str, "%Y:%m:%d %H:%M:%S")
+                        parsed_dt = dt
+                        logger.debug(f"[{self.username}] EXIF date for '{original_name}': {dt.date()}")
+            except Exception as e:
+                logger.debug(f"[{self.username}] Failed to read EXIF from '{original_name}': {e}")
 
+        # 尝试从文件名解析日期
+        if parsed_dt is None:
+            parsed_dt = self._parse_date_from_name(original_name)
+
+        # 最后 fallback 到文件修改时间
+        if parsed_dt is None:
+            mtime = temp_file.stat().st_mtime
+            parsed_dt = datetime.fromtimestamp(mtime)
+            logger.debug(f"[{self.username}] Using st_mtime for '{original_name}': {parsed_dt.date()}")
+
+        date_path = self.user_dir / f"{parsed_dt.year}" / f"{parsed_dt.month:02d}" / f"{parsed_dt.day:02d}"
         date_path.mkdir(parents=True, exist_ok=True)
 
         # 处理文件名冲突
