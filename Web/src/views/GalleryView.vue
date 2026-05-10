@@ -49,7 +49,7 @@
             v-for="photo in group.photos"
             :key="photo.id"
             class="photo-item"
-            :class="{ selected: selectedIds.has(photo.id) }"
+            :class="{ selected: selectedIds.has(photo.id), selecting: isSelecting && !selectedIds.has(photo.id) }"
             @click="onPhotoClick(photo)"
           >
             <img
@@ -57,10 +57,7 @@
               :alt="photo.name"
               loading="lazy"
             />
-            <div v-if="selectedIds.has(photo.id)" class="photo-check">✓</div>
-            <div v-if="isSelecting" class="checkbox" :class="{ on: selectedIds.has(photo.id) }">
-              {{ selectedIds.has(photo.id) ? '✓' : '' }}
-            </div>
+            <div v-show="isSelecting && selectedIds.has(photo.id)" class="photo-check">✓</div>
           </div>
         </div>
       </div>
@@ -187,7 +184,8 @@ function onPhotoClick(photo: GalleryPhoto) {
   } else {
     // 进入选择模式
     isSelecting.value = true
-    toggleSelect(photo.id)
+    // 延迟一下再选中，避免状态切换时重渲染冲突
+    setTimeout(() => toggleSelect(photo.id), 10)
   }
 }
 
@@ -457,6 +455,11 @@ onMounted(() => {
 .photo-item.selected {
   outline: 3px solid #4f8aff;
   outline-offset: -2px;
+}
+
+.photo-item.selecting {
+  outline: 1px dashed #4f8aff;
+  outline-offset: -1px;
 }
 
 .photo-check {
