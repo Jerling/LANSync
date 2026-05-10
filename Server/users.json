@@ -1,1 +1,6 @@
-{}
+{
+  "iphone12": {
+    "salt": "49f0de98ab63e696f1d2028999050fc6",
+    "password_hash": "a9d047af2ec52a7a7e2417e52371d7a4fab1b2ab2f5321a637549e1bbba51019"
+  }
+}

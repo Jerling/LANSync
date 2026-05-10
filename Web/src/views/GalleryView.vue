@@ -14,6 +14,7 @@
       <template v-else>
         <h2>云相册</h2>
         <div class="header-actions">
+          <button class="btn-icon upload-btn" @click="triggerUpload" title="上传照片">+</button>
           <button class="btn-icon" @click="handleRefresh" title="刷新">↻</button>
           <button class="btn-icon" @click="handleLogout" title="退出">⎋</button>
         </div>
@@ -96,8 +97,30 @@
       </div>
     </div>
 
+    <!-- Upload Progress Dialog -->
+    <div v-if="uploading" class="dialog-overlay">
+      <div class="dialog upload-dialog">
+        <h3>上传中...</h3>
+        <p>{{ uploadCurrent }} / {{ uploadTotal }}</p>
+        <div class="progress-bar">
+          <div class="progress-fill" :style="{ width: uploadProgress + '%' }"></div>
+        </div>
+        <p class="upload-name" v-if="uploadFileName">{{ uploadFileName }}</p>
+      </div>
+    </div>
+
     <!-- Toast -->
     <div v-if="toast" class="toast">{{ toast }}</div>
+
+    <!-- Hidden file input -->
+    <input
+      ref="fileInputRef"
+      type="file"
+      accept="image/*,video/*"
+      multiple
+      style="display:none"
+      @change="onFilesSelected"
+    />
   </div>
 </template>
 
@@ -117,6 +140,12 @@ const showDeleteDialog = ref(false)
 const toast = ref('')
 const thumbnailUrls = ref(new Map<string, string>())
 const deleteCount = ref(0)
+const fileInputRef = ref<HTMLInputElement | null>(null)
+const uploading = ref(false)
+const uploadTotal = ref(0)
+const uploadCurrent = ref(0)
+const uploadProgress = ref(0)
+const uploadFileName = ref('')
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return bytes + ' B'
@@ -241,6 +270,53 @@ function handleLogout() {
 function showToast(msg: string) {
   toast.value = msg
   setTimeout(() => { toast.value = '' }, 3000)
+}
+
+function triggerUpload() {
+  fileInputRef.value?.click()
+}
+
+async function onFilesSelected(e: Event) {
+  const input = e.target as HTMLInputElement
+  const files = Array.from(input.files || [])
+  if (files.length === 0) return
+
+  uploading.value = true
+  uploadTotal.value = files.length
+  uploadCurrent.value = 0
+  uploadProgress.value = 0
+
+  let success = 0
+  let failed = 0
+
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i]
+    uploadCurrent.value = i + 1
+    uploadFileName.value = file.name
+    uploadProgress.value = 0
+
+    try {
+      await api.uploadPhoto(file, (pct) => {
+        uploadProgress.value = pct
+      })
+      success++
+    } catch {
+      failed++
+    }
+  }
+
+  uploading.value = false
+  uploadFileName.value = ''
+
+  const msg = failed === 0
+    ? `上传成功 ${success} 张`
+    : `${success} 张成功，${failed} 张失败`
+  showToast(msg)
+
+  input.value = '' // reset input
+  if (success > 0) {
+    await loadGallery()
+  }
 }
 
 onMounted(() => {
@@ -470,6 +546,40 @@ onMounted(() => {
 
 .preview-actions .btn-danger {
   background: #e53e3e;
+}
+
+.upload-btn {
+  background: #4f8aff !important;
+  color: white !important;
+  font-weight: bold;
+  font-size: 1.3rem !important;
+}
+
+.progress-bar {
+  height: 8px;
+  background: #e0e0e0;
+  border-radius: 4px;
+  overflow: hidden;
+  margin: 0.75rem 0 0.5rem;
+}
+
+.progress-fill {
+  height: 100%;
+  background: #4f8aff;
+  border-radius: 4px;
+  transition: width 0.2s;
+}
+
+.upload-name {
+  font-size: 0.8rem;
+  color: #888;
+  word-break: break-all;
+  margin: 0 !important;
+}
+
+.upload-dialog p {
+  margin: 0 0 0.25rem;
+  color: #555;
 }
 
 .dialog-overlay {

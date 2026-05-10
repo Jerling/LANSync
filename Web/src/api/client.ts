@@ -125,10 +125,9 @@ class ApiClient {
   async uploadPhoto(file: File, onProgress?: (pct: number) => void): Promise<void> {
     const formData = new FormData()
     formData.append('file', file)
-    await axios.post(`${this.baseUrl}api/upload`, formData, {
+    await axios.post(`${this.baseUrl}api/upload/photo`, formData, {
       headers: {
         'Authorization': `Bearer ${this.token}`,
-        'Content-Type': 'multipart/form-data',
       },
       onUploadProgress: (e) => {
         if (e.total && onProgress) {
