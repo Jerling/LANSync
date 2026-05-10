@@ -51,7 +51,6 @@
       v-else
       class="groups"
       :class="{ 'is-selecting': selecting }"
-      @click="onGalleryClick"
     >
       <div v-for="group in groups" :key="group.date" class="group">
         <div class="group-header">{{ group.date }}</div>
@@ -62,6 +61,9 @@
             class="photo-item"
             :data-id="photo.id"
             :data-selected="isSelected(photo.id)"
+            @pointerdown.stop="onPhotoPointerDown(photo.id)"
+            @pointerup.stop="onPhotoPointerUp(photo.id)"
+            @pointerleave.stop="cancelPointer(photo.id)"
           >
             <img
               :src="getThumbnailUrl(photo)"
@@ -166,29 +168,54 @@ function isSelected(id: string): string {
 }
 
 // --- DOM event delegation (single handler on container) ---
-function onGalleryClick(e: MouseEvent) {
-  const target = (e.target as HTMLElement).closest('.photo-item') as HTMLElement | null
-  if (!target) return
-  const id = target.dataset['id']
-  if (!id) return
+// Single click = preview, long press (500ms) = selection mode
+let pressTimer: number | null = null
+let pressTargetId: string | null = null
+const LONG_PRESS_MS = 500
 
-  if (!selecting.value) {
-    selecting.value = true
-    selectedIds.value = new Set([id])
-  } else {
-    const s = new Set(selectedIds.value)
-    if (s.has(id)) {
-      s.delete(id)
-      if (s.size === 0) {
-        selecting.value = false
-        selectedIds.value = new Set()
-        return
-      }
+function onPhotoPointerDown(id: string) {
+  pressTargetId = id
+  pressTimer = window.setTimeout(() => {
+    // Long press fires immediately — enter selection mode
+    if (!selecting.value) {
+      selecting.value = true
+      selectedIds.value = new Set([id])
     } else {
-      s.add(id)
+      const s = new Set(selectedIds.value)
+      s.has(id) ? s.delete(id) : s.add(id)
+      if (s.size === 0) { selecting.value = false; selectedIds.value = new Set(); return }
+      selectedIds.value = s
     }
-    selectedIds.value = s
+    pressTimer = null
+    pressTargetId = null
+  }, LONG_PRESS_MS)
+}
+
+function onPhotoPointerUp(id: string) {
+  if (pressTimer !== null && pressTargetId === id) {
+    // Short press — preview photo (only if same element as pointerdown)
+    clearTimeout(pressTimer)
+    pressTimer = null
+    openPreview(id)
   }
+  pressTimer = null
+  pressTargetId = null
+}
+
+function cancelPointer(_id: string) {
+  if (pressTimer !== null) {
+    clearTimeout(pressTimer)
+    pressTimer = null
+    pressTargetId = null
+  }
+}
+
+function openPreview(id: string) {
+  const photo = groups.value.flatMap(g => g.photos).find(p => p.id === id)
+  if (!photo) return
+  api.getPhotoUrl(photo.path).then(url => {
+    previewPhoto.value = { ...photo, url }
+  })
 }
 
 function exitSelection() {
