@@ -246,15 +246,16 @@ class PhotoStorage:
         with open(temp_file, "wb") as f:
             f.write(file_data)
 
-        # 尝试从 EXIF 读取拍摄时间
+        # 尝试从 EXIF 读取拍摄时间（仅图片）
         parsed_dt = None
         ext_lower = ext.lower()
-        is_image = ext_lower in (".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif", ".jpg", ".jpeg")
+        is_image = ext_lower in IMAGE_EXTS
+        is_video = ext_lower in VIDEO_EXTS
+
         if is_image:
             try:
                 with Image.open(temp_file) as img:
                     exif = img.getexif()
-                    # 尝试多个 EXIF 日期字段
                     for tag in (36867, 36868, 306):
                         dt_raw = exif.get(tag)
                         if dt_raw:
@@ -262,12 +263,30 @@ class PhotoStorage:
                             try:
                                 dt = datetime.strptime(dt_str, "%Y:%m:%d %H:%M:%S")
                                 parsed_dt = dt
-                                logger.debug(f"[{self.username}] EXIF date (tag={tag}) for '{original_name}': {dt.date()}")
+                                logger.info(f"[{self.username}] EXIF date (tag={tag}) for '{original_name}': {dt.date()}")
                                 break
                             except ValueError:
                                 pass
             except Exception as e:
-                logger.debug(f"[{self.username}] Failed to read EXIF from '{original_name}': {e}")
+                logger.info(f"[{self.username}] EXIF read failed for '{original_name}': {e}")
+
+        # 尝试用 ffprobe 读取视频元数据
+        if parsed_dt is None and is_video:
+            try:
+                import subprocess
+                result = subprocess.run(
+                    ["ffprobe", "-v", "quiet", "-show_entries", "format_tags=creation_time",
+                     "-of", "default=noprint_wrappers=1:nokey=1", str(temp_file)],
+                    capture_output=True, text=True, timeout=10
+                )
+                if result.stdout and result.stdout.strip():
+                    creation_str = result.stdout.strip()
+                    # ffprobe returns "2026-05-10T19:47:36.000000Z"
+                    dt = datetime.fromisoformat(creation_str.replace("Z", "+00:00").split(".")[0])
+                    parsed_dt = dt
+                    logger.info(f"[{self.username}] ffprobe date for '{original_name}': {dt.date()}")
+            except Exception as e:
+                logger.info(f"[{self.username}] ffprobe failed for '{original_name}': {e}")
 
         # 尝试从文件名解析日期
         if parsed_dt is None:
@@ -277,7 +296,7 @@ class PhotoStorage:
         if parsed_dt is None:
             mtime = temp_file.stat().st_mtime
             parsed_dt = datetime.fromtimestamp(mtime)
-            logger.debug(f"[{self.username}] Using st_mtime for '{original_name}': {parsed_dt.date()}")
+            logger.info(f"[{self.username}] Using mtime for '{original_name}': {parsed_dt.date()}")
 
         date_path = self.user_dir / f"{parsed_dt.year}" / f"{parsed_dt.month:02d}" / f"{parsed_dt.day:02d}"
         date_path.mkdir(parents=True, exist_ok=True)
