@@ -8,6 +8,8 @@
         </button>
         <span class="selected-count">{{ selectedIds.size }} 已选中</span>
         <div class="top-actions">
+          <button v-if="selectedIds.size === 1" class="btn-text" @click="previewSelected">预览</button>
+          <button class="btn-text" @click="selectAll">{{ selectedIds.size === allCurrentIds.length ? '取消全选' : '全选' }}</button>
           <button class="btn-text" @click="handleDelete">删除</button>
         </div>
       </template>
@@ -147,6 +149,8 @@ const uploadCurrent = ref(0)
 const uploadProgress = ref(0)
 const uploadFileName = ref('')
 
+const allCurrentIds = computed(() => groups.value.flatMap(g => g.photos).map(p => p.id))
+
 function formatSize(bytes: number): string {
   if (bytes < 1024) return bytes + ' B'
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
@@ -181,7 +185,9 @@ function onPhotoClick(photo: GalleryPhoto) {
   if (isSelecting.value) {
     toggleSelect(photo.id)
   } else {
-    openPreview(photo)
+    // 进入选择模式
+    isSelecting.value = true
+    toggleSelect(photo.id)
   }
 }
 
@@ -193,9 +199,22 @@ function toggleSelect(id: string) {
   if (s.size === 0) isSelecting.value = false
 }
 
-async function openPreview(photo: GalleryPhoto) {
-  const url = await api.getPhotoUrl(photo.path)
-  previewPhoto.value = { ...photo, url }
+function selectAll() {
+  if (selectedIds.value.size === allCurrentIds.value.length) {
+    clearSelection()
+  } else {
+    selectedIds.value = new Set(allCurrentIds.value)
+  }
+}
+
+async function previewSelected() {
+  if (selectedIds.value.size !== 1) return
+  const id = Array.from(selectedIds.value)[0]
+  const photo = groups.value.flatMap(g => g.photos).find(p => p.id === id)
+  if (photo) {
+    const url = await api.getPhotoUrl(photo.path)
+    previewPhoto.value = { ...photo, url }
+  }
 }
 
 function closePreview() {
