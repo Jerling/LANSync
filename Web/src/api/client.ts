@@ -110,6 +110,13 @@ class ApiClient {
     return `${this.baseUrl}api/gallery/photo/${path}?token=${this.token}`
   }
 
+  getThumbnailUrl(path: string): string {
+    // Direct URL — browser requests it via <img loading="lazy"> when element enters viewport
+    // No JS-side fetching = no concurrent request burst
+    const encoded = encodeURIComponent(path)
+    return `${this.baseUrl}api/gallery/thumb/${encoded}?token=${this.token}`
+  }
+
   async downloadPhoto(path: string): Promise<Blob> {
     const resp = await axios.get(`${this.baseUrl}api/gallery/photo/${path}`, {
       headers: { 'Authorization': `Bearer ${this.token}` },

@@ -244,7 +244,9 @@ function formatSize(bytes: number): string {
 }
 
 function getThumbnailUrl(photo: GalleryPhoto): string {
-  return thumbnailUrls.value.get(photo.id) || ''
+  // Use thumbnail endpoint directly — URL is requested when img enters viewport (loading="lazy")
+  // No pre-fetching = no burst of concurrent requests
+  return api.getThumbnailUrl(photo.path)
 }
 
 async function loadGallery() {
@@ -253,13 +255,8 @@ async function loadGallery() {
   thumbnailUrls.value = new Map()
   try {
     groups.value = await api.getGallery()
-    for (const group of groups.value) {
-      for (const photo of group.photos) {
-        api.getPhotoUrl(photo.path).then(url => {
-          thumbnailUrls.value.set(photo.id, url)
-        })
-      }
-    }
+    // No eager URL fetching — <img loading="lazy"> handles when each thumbnail is actually needed.
+    // This avoids thousands of concurrent HTTP requests on large galleries.
   } catch (e: any) {
     error.value = '加载失败: ' + (e?.message || '未知错误')
   } finally {
