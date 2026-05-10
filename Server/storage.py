@@ -237,28 +237,38 @@ class PhotoStorage:
                 "hash": file_hash
             }
 
-        # 根据文件名解析拍摄日期，确定目录
-        date_path = self.get_date_path_from_name(original_name)
-
-        # 使用原始文件名，如果冲突则加时间戳
-        base_name = Path(original_name).stem
-        file_path = date_path / original_name
-        counter = 1
-        while file_path.exists():
-            new_name = f"{base_name}_{timestamp or int(datetime.now().timestamp())}{ext}"
-            file_path = date_path / new_name
-            if file_path.exists():
-                new_name = f"{base_name}_{timestamp or int(datetime.now().timestamp())}_{counter}{ext}"
-                file_path = date_path / new_name
-                counter += 1
-
-        with open(file_path, "wb") as f:
+        # 先写到临时目录，再根据文件创建时间归类
+        # 这样即使文件名解析失败，也能用文件的实际创建时间
+        temp_dir = self.user_dir / "_pending"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        temp_file = temp_dir / original_name
+        with open(temp_file, "wb") as f:
             f.write(file_data)
 
-        actual_size = file_path.stat().st_size
-        # 相对路径相对于 user_dir
-        relative_path = str(file_path.relative_to(self.user_dir))
+        # 尝试从文件名解析日期；失败则用文件的 st_ctime
+        parsed_dt = self._parse_date_from_name(original_name)
+        if parsed_dt is not None:
+            date_path = self.user_dir / f"{parsed_dt.year}" / f"{parsed_dt.month:02d}" / f"{parsed_dt.day:02d}"
+        else:
+            ctime = temp_file.stat().st_ctime
+            dt = datetime.fromtimestamp(ctime)
+            date_path = self.user_dir / f"{dt.year}" / f"{dt.month:02d}" / f"{dt.day:02d}"
+            logger.debug(f"[{self.username}] Could not parse date from '{original_name}', using st_ctime: {dt.date()}")
 
+        date_path.mkdir(parents=True, exist_ok=True)
+
+        # 处理文件名冲突
+        base_name = Path(original_name).stem
+        final_path = date_path / original_name
+        counter = 1
+        while final_path.exists():
+            final_path = date_path / f"{base_name}_{int(datetime.now().timestamp())}_{counter}{ext}"
+            counter += 1
+
+        temp_file.rename(final_path)
+
+        actual_size = final_path.stat().st_size
+        relative_path = str(final_path.relative_to(self.user_dir))
         file_type = "video" if ext in VIDEO_EXTS else "image"
 
         # 用 SHA256 作为 manifest key，value 为列表支持同哈希多文件
@@ -266,7 +276,7 @@ class PhotoStorage:
             manifest[file_hash] = []
         manifest[file_hash].append({
             "original_name": original_name,
-            "saved_name": file_path.name,
+            "saved_name": final_path.name,
             "size": actual_size,
             "type": file_type,
             "timestamp": timestamp,
@@ -277,7 +287,7 @@ class PhotoStorage:
 
         return {
             "original_name": original_name,
-            "saved_name": file_path.name,
+            "saved_name": final_path.name,
             "path": relative_path,
             "size": actual_size,
             "timestamp": timestamp,
