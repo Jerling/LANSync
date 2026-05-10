@@ -275,16 +275,22 @@ class PhotoStorage:
             try:
                 import subprocess
                 result = subprocess.run(
-                    ["ffprobe", "-v", "quiet", "-show_entries", "format_tags=creation_time",
-                     "-of", "default=noprint_wrappers=1:nokey=1", str(temp_file)],
+                    ["ffprobe", "-v", "quiet",
+                     "-show_entries", "format_tags=creation_time,com.apple.quicktime.creationdate",
+                     "-show_format", "-of", "json", str(temp_file)],
                     capture_output=True, text=True, timeout=10
                 )
-                if result.stdout and result.stdout.strip():
-                    creation_str = result.stdout.strip()
-                    # ffprobe returns "2026-05-10T19:47:36.000000Z"
-                    dt = datetime.fromisoformat(creation_str.replace("Z", "+00:00").split(".")[0])
-                    parsed_dt = dt
-                    logger.info(f"[{self.username}] ffprobe date for '{original_name}': {dt.date()}")
+                if result.stdout:
+                    tags = json.loads(result.stdout).get("format", {}).get("tags", {})
+                    # 优先用 com.apple.quicktime.creationdate（iPhone 录制时间）
+                    for key in ("com.apple.quicktime.creationdate", "creation_time"):
+                        val = tags.get(key)
+                        if val:
+                            val = val.replace("+0800", "").replace("Z", "").split(".")[0]
+                            dt = datetime.fromisoformat(val)
+                            parsed_dt = dt
+                            logger.info(f"[{self.username}] ffprobe [{key}] for '{original_name}': {dt.date()}")
+                            break
             except Exception as e:
                 logger.info(f"[{self.username}] ffprobe failed for '{original_name}': {e}")
 
