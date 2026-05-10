@@ -55,7 +55,11 @@ def create_app(config_path: str = "config.yaml"):
         return send_from_directory(static_dir, "index.html")
     @app.route("/<path:filename>")
     def serve_static(filename):
-        return send_from_directory(static_dir, filename)
+        # 文件存在则正常返回，否则让 SPA 处理（Vue Router 路由）
+        file_path = static_dir / filename
+        if file_path.is_file():
+            return send_from_directory(static_dir, filename)
+        return send_from_directory(static_dir, "index.html")
 
     logger.info(f"LANSync Server started on {cfg['server']['host']}:{cfg['server']['port']}")
     logger.info(f"Storage base directory: {cfg['storage']['base_dir']}")
