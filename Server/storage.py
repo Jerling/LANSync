@@ -246,8 +246,16 @@ class PhotoStorage:
         with open(temp_file, "wb") as f:
             f.write(file_data)
 
-        # 尝试从 EXIF 读取拍摄时间（仅图片）
+        # 尝试从客户端获取拍摄时间（最可靠）
         parsed_dt = None
+        if timestamp:
+            try:
+                from datetime import timezone
+                parsed_dt = datetime.fromtimestamp(timestamp, tz=timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+                logger.info(f"[{self.username}] Using client-provided timestamp for '{original_name}': {parsed_dt.date()}")
+            except (ValueError, OSError) as e:
+                logger.info(f"[{self.username}] Invalid timestamp {timestamp} for '{original_name}': {e}")
+
         ext_lower = ext.lower()
         is_image = ext_lower in IMAGE_EXTS
         is_video = ext_lower in VIDEO_EXTS
@@ -267,6 +275,20 @@ class PhotoStorage:
                                 break
                             except ValueError:
                                 pass
+                    # 尝试从 XMP 读日期（美图秀秀等工具编辑过的照片可能只有 XMP 日期
+                    if parsed_dt is None:
+                        try:
+                            xmp = img.info.get("xmp", b"")
+                            if xmp:
+                                import re
+                                # xmp:CreateDate = "2026-05-09T12:34:56"
+                                match = re.search(r'xmp:CreateDate="(\d{4}-\d{2}-\d{2})', xmp.decode("utf-8", errors="replace"))
+                                if match:
+                                    dt = datetime.strptime(match.group(1), "%Y-%m-%d")
+                                    parsed_dt = dt
+                                    logger.info(f"[{self.username}] XMP date for '{original_name}': {dt.date()}")
+                        except Exception:
+                            pass
             except Exception as e:
                 logger.info(f"[{self.username}] EXIF read failed for '{original_name}': {e}")
 

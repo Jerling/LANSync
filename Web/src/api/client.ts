@@ -130,8 +130,21 @@ class ApiClient {
   }
 
   async uploadPhoto(file: File, onProgress?: (pct: number) => void): Promise<void> {
+    // Try to read EXIF DateTime (tag 306) from JPEG before uploading
+    // This captures the actual photo-taking date even when iOS/Safari re-encodes the image
+    let timestamp: number | null = null
+    if (file.type === 'image/jpeg' || file.name.toLowerCase().match(/\.(jpg|jpeg)$/)) {
+      try {
+        const buffer = await file.slice(0, 131072).arrayBuffer() // read first 128KB (enough for EXIF header)
+        timestamp = await readExifDateTime(buffer)
+      } catch { /* ignore EXIF parse errors */ }
+    }
+
     const formData = new FormData()
     formData.append('file', file)
+    if (timestamp) {
+      formData.append('timestamp', Math.floor(timestamp).toString())
+    }
     await axios.post(`${this.baseUrl}api/upload/photo`, formData, {
       headers: {
         'Authorization': `Bearer ${this.token}`,
@@ -143,6 +156,60 @@ class ApiClient {
       },
     })
   }
+}
+
+/** Parse EXIF tag 306 (DateTime) from JPEG binary ArrayBuffer, returns Unix timestamp or null */
+async function readExifDateTime(buffer: ArrayBuffer): Promise<number | null> {
+  const bytes = new Uint8Array(buffer)
+  // Find APP1 marker (0xFF 0xE1)
+  for (let i = 0; i < bytes.length - 4; i++) {
+    if (bytes[i] === 0xFF && bytes[i+1] === 0xE1) {
+      const len = (bytes[i+2] << 8) | bytes[i+3]
+      const app1Content = bytes.slice(i+4, i+2+len)
+      const marker = String.fromCharCode(...app1Content.slice(0, 4))
+      if (marker !== 'Exif') break
+      // Skip byte order mark (II or MM) + magic (2a 00)
+      const tiffStart = 6
+      const byteOrder = String.fromCharCode(app1Content[tiffStart], app1Content[tiffStart+1])
+      const isLittle = byteOrder === 'II'
+      const readU16 = (offset: number) => {
+        const b0 = app1Content[tiffStart + offset], b1 = app1Content[tiffStart + offset + 1]
+        return isLittle ? (b0 | (b1 << 8)) : ((b0 << 8) | b1)
+      }
+      const readU32 = (offset: number) => {
+        const b0 = app1Content[tiffStart + offset], b1 = app1Content[tiffStart + offset + 1]
+        const b2 = app1Content[tiffStart + offset + 2], b3 = app1Content[tiffStart + offset + 3]
+        return isLittle ? (b0 | (b1<<8) | (b2<<16) | (b3<<24)) : ((b0<<24) | (b1<<16) | (b2<<8) | b3)
+      }
+      const ifdOffset = readU32(4)
+      const numEntries = readU16(ifdOffset)
+      for (let j = 0; j < numEntries; j++) {
+        const entryOffset = ifdOffset + 2 + j * 12
+        const tag = readU16(entryOffset)
+        if (tag === 306) { // DateTime tag
+          const type = readU16(entryOffset + 2)
+          if (type === 2) { // ASCII string
+            const count = readU32(entryOffset + 4)
+            const valueOffset = count > 4 ? readU32(entryOffset + 8) : entryOffset + 8
+            const chars: string[] = []
+            for (let k = 0; k < count - 1; k++) {
+              const ch = app1Content[tiffStart + valueOffset + k]
+              if (ch === 0) break
+              chars.push(String.fromCharCode(ch))
+            }
+            const dtStr = chars.join('')
+            // Format: "YYYY:MM:DD HH:MM:SS"
+            const m = dtStr.match(/^(\d{4}):(\d{2}):(\d{2}) (\d{2}):(\d{2}):(\d{2})/)
+            if (m) {
+              return new Date(+m[1], +m[2]-1, +m[3], +m[4], +m[5], +m[6]).getTime() / 1000
+            }
+          }
+        }
+      }
+      break
+    }
+  }
+  return null
 }
 
 export const api = new ApiClient()

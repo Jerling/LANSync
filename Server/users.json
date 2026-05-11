@@ -2,5 +2,9 @@
   "iphone12": {
     "salt": "49f0de98ab63e696f1d2028999050fc6",
     "password_hash": "a9d047af2ec52a7a7e2417e52371d7a4fab1b2ab2f5321a637549e1bbba51019"
+  },
+  "sherry": {
+    "salt": "433aef5c3e22c344705ed0481ea8e390",
+    "password_hash": "ed257a18ad0fb36c7725f86829077cbea9401a5812c5b5fb01f86431a3409be7"
   }
 }
