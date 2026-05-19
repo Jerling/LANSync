@@ -59,7 +59,7 @@ fun GalleryScreen(
         if (uiState.showDeleteLocalDialog && uiState.pendingDeleteInfo != null) {
             val info = uiState.pendingDeleteInfo!!
             AlertDialog(
-                onDismissRequest = { viewModel.confirmDelete(alsoDeleteLocal = false) },
+                onDismissRequest = { viewModel.dismissDeleteDialog() },
                 title = { Text("删除照片") },
                 text = {
                     Text(
@@ -80,7 +80,7 @@ fun GalleryScreen(
                             Text("只删云端")
                         }
                         Spacer(Modifier.width(8.dp))
-                        TextButton(onClick = { viewModel.confirmDelete(alsoDeleteLocal = false) }) {
+                        TextButton(onClick = { viewModel.dismissDeleteDialog() }) {
                             Text("取消")
                         }
                     }

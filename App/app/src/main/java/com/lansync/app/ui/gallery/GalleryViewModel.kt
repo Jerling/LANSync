@@ -7,6 +7,7 @@ import com.lansync.app.data.local.SyncedFileDao
 import com.lansync.app.data.local.TokenManager
 import com.lansync.app.domain.model.*
 import com.lansync.app.service.WifiSyncService
+import android.util.Log
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -140,13 +141,14 @@ class GalleryViewModel @Inject constructor(
     private val baseUrl: String
         get() = ApiClient.getBaseUrl()
 
-    private var authToken: String? = null
-
     init {
         checkLoginAndLoad()
+        // 监听同步服务状态，同步完成后自动刷新云相册
         viewModelScope.launch {
-            tokenManager.tokenFlow.collect { token ->
-                authToken = token
+            WifiSyncService.syncStateFlow.collect { state ->
+                if (state is SyncState.Completed || state is SyncState.AllSynced || state is SyncState.Error) {
+                    loadGallery()
+                }
             }
         }
     }
@@ -181,7 +183,20 @@ class GalleryViewModel @Inject constructor(
                     val body = response.body()!!
                     _uiState.value = _uiState.value.copy(
                         isLoading = false,
-                        groups = body.groups,
+                        groups = body.groups.map { group ->
+                            group.copy(
+                                photos = group.photos.map { photo ->
+                                    val localUri = _localPhotoMap.value[photo.path]
+                                        ?: _localPhotoNameSizeMap.value["${photo.name}_${photo.size}"]
+                                    Log.d("GalleryVM", "loadGallery: photo ${photo.name} hasLocal=${photo.hasLocal}, path=${photo.path}")
+                                    if (localUri != null) {
+                                        photo.copy(hasLocal = true, localUri = localUri)
+                                    } else {
+                                        photo
+                                    }
+                                }
+                            )
+                        },
                         totalCount = body.totalCount
                     )
                 } else {
@@ -205,12 +220,12 @@ class GalleryViewModel @Inject constructor(
 
     fun getThumbUrl(photoPath: String): String {
         val encoded = photoPath.replace("/", "%2F")
-        val token = authToken ?: ""
+        val token = tokenManager.tokenFlow.value ?: ""
         return "${baseUrl}api/gallery/thumb/$encoded?token=$token"
     }
 
     fun getPhotoUrl(photoPath: String): String {
-        val token = authToken ?: ""
+        val token = tokenManager.tokenFlow.value ?: ""
         return "${baseUrl}api/gallery/photo/$photoPath?token=$token"
     }
 
@@ -265,9 +280,9 @@ class GalleryViewModel @Inject constructor(
             .filter { !it.fileName.isNullOrEmpty() && it.fileSize > 0 && !it.filePath.isNullOrEmpty() }
             .associate { "${it.fileName}_${it.fileSize}" to it.filePath!! }
 
+        Log.d("GalleryVM", "preloadLocalPhotoMap: files=${files.size}, serverPathMap keys sample=${serverPathMap.keys.take(3)}, nameSizeMap keys sample=${nameSizeMap.keys.take(3)}")
         _localPhotoMap.value = serverPathMap
         _localPhotoNameSizeMap.value = nameSizeMap
-        WifiSyncService.emitDebugLog("[Gallery] DB查询: serverPathMap=${serverPathMap.size}条, nameSizeMap=${nameSizeMap.size}条, serverPaths=${serverPathMap.keys.take(3)}, nameSizes=${nameSizeMap.keys.toList()}")
     }
 
     fun clearSelectedPhoto() {
@@ -368,6 +383,7 @@ class GalleryViewModel @Inject constructor(
             }
         }
 
+        Log.d("GalleryVM", "prepareDelete: selected=${state.selectedIds.size}, localMap size=${_localPhotoMap.value.size}, nameSizeMap size=${_localPhotoNameSizeMap.value.size}")
         if (localPhotoIds.isNotEmpty()) {
             // 有本地副本，弹出确认框
             _uiState.value = state.copy(
@@ -382,6 +398,16 @@ class GalleryViewModel @Inject constructor(
             // 无本地副本，直接删除云端
             deleteSelected(alsoDeleteLocal = false)
         }
+    }
+
+    /**
+     * 关闭删除确认对话框（只关闭，不执行删除）
+     */
+    fun dismissDeleteDialog() {
+        _uiState.value = _uiState.value.copy(
+            showDeleteLocalDialog = false,
+            pendingDeleteInfo = null
+        )
     }
 
     /**
@@ -430,6 +456,15 @@ class GalleryViewModel @Inject constructor(
                 if (response.isSuccessful && response.body() != null) {
                     val body = response.body()!!
 
+                    // 删除成功后，清理本地同步记录（以便后续可重新上传）
+                    if (body.deleted.isNotEmpty()) {
+                        withContext(Dispatchers.IO) {
+                            for (path in body.deleted) {
+                                syncedFileDao.deleteByServerPath(path)
+                            }
+                        }
+                    }
+
                     // 一并删除本地文件
                     if (alsoDeleteLocal && localPhotoIdsToDelete.isNotEmpty()) {
                         deleteLocalPhotos(localPhotoIdsToDelete)
@@ -446,13 +481,22 @@ class GalleryViewModel @Inject constructor(
                         } else ""
                         "已删除 ${body.deleted.size} 张照片$localMsg"
                     }
-                    _uiState.value = _uiState.value.copy(
+                    // 乐观更新：直接从当前列表移除已删除的照片，保持滚动位置
+                    val deletedPaths = body.deleted.toSet()
+                    val updatedGroups = state.groups.map { group ->
+                        val remaining = group.photos.filter { it.path !in deletedPaths }
+                        if (remaining.isEmpty()) null else group.copy(photos = remaining)
+                    }.filterNotNull()
+                    _uiState.value = state.copy(
                         isOperationInProgress = false,
                         operationMessage = msg,
                         isSelecting = false,
-                        selectedIds = emptySet()
+                        selectedIds = emptySet(),
+                        groups = updatedGroups,
+                        totalCount = (state.totalCount - body.deleted.size).coerceAtLeast(0),
+                        showDeleteLocalDialog = false,
+                        pendingDeleteInfo = null
                     )
-                    loadGallery()
                     onSuccess()
                 } else {
                     _uiState.value = _uiState.value.copy(
@@ -619,7 +663,7 @@ class GalleryViewModel @Inject constructor(
     private suspend fun downloadSinglePhoto(photo: GalleryPhoto, context: Context): android.net.Uri? {
         return withContext(Dispatchers.IO) {
             try {
-                val photoUrl = "${baseUrl}api/gallery/photo/${photo.path}?token=$authToken"
+                val photoUrl = "${baseUrl}api/gallery/photo/${photo.path}?token=${tokenManager.tokenFlow.value ?: ""}"
                 val request = Request.Builder().url(photoUrl).build()
 
                 ApiClient.getOkHttpClient().newCall(request).execute().use { response ->
