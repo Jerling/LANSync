@@ -8,6 +8,7 @@ import hashlib
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+from PIL import Image
 
 logger = logging.getLogger(__name__)
 
@@ -237,28 +238,109 @@ class PhotoStorage:
                 "hash": file_hash
             }
 
-        # 根据文件名解析拍摄日期，确定目录
-        date_path = self.get_date_path_from_name(original_name)
-
-        # 使用原始文件名，如果冲突则加时间戳
-        base_name = Path(original_name).stem
-        file_path = date_path / original_name
-        counter = 1
-        while file_path.exists():
-            new_name = f"{base_name}_{timestamp or int(datetime.now().timestamp())}{ext}"
-            file_path = date_path / new_name
-            if file_path.exists():
-                new_name = f"{base_name}_{timestamp or int(datetime.now().timestamp())}_{counter}{ext}"
-                file_path = date_path / new_name
-                counter += 1
-
-        with open(file_path, "wb") as f:
+        # 先写到临时目录，再根据文件创建时间归类
+        # 优先级: EXIF拍摄时间 > st_mtime > datetime.now()
+        temp_dir = self.user_dir / "_pending"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        temp_file = temp_dir / original_name
+        with open(temp_file, "wb") as f:
             f.write(file_data)
 
-        actual_size = file_path.stat().st_size
-        # 相对路径相对于 user_dir
-        relative_path = str(file_path.relative_to(self.user_dir))
+        # 尝试从客户端获取拍摄时间（最可靠）
+        parsed_dt = None
+        if timestamp:
+            try:
+                from datetime import timezone
+                parsed_dt = datetime.fromtimestamp(timestamp, tz=timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+                logger.info(f"[{self.username}] Using client-provided timestamp for '{original_name}': {parsed_dt.date()}")
+            except (ValueError, OSError) as e:
+                logger.info(f"[{self.username}] Invalid timestamp {timestamp} for '{original_name}': {e}")
 
+        ext_lower = ext.lower()
+        is_image = ext_lower in IMAGE_EXTS
+        is_video = ext_lower in VIDEO_EXTS
+
+        if is_image:
+            try:
+                with Image.open(temp_file) as img:
+                    exif = img.getexif()
+                    for tag in (36867, 36868, 306):
+                        dt_raw = exif.get(tag)
+                        if dt_raw:
+                            dt_str = str(dt_raw)
+                            try:
+                                dt = datetime.strptime(dt_str, "%Y:%m:%d %H:%M:%S")
+                                parsed_dt = dt
+                                logger.info(f"[{self.username}] EXIF date (tag={tag}) for '{original_name}': {dt.date()}")
+                                break
+                            except ValueError:
+                                pass
+                    # 尝试从 XMP 读日期（美图秀秀等工具编辑过的照片可能只有 XMP 日期
+                    if parsed_dt is None:
+                        try:
+                            xmp = img.info.get("xmp", b"")
+                            if xmp:
+                                import re
+                                # xmp:CreateDate = "2026-05-09T12:34:56"
+                                match = re.search(r'xmp:CreateDate="(\d{4}-\d{2}-\d{2})', xmp.decode("utf-8", errors="replace"))
+                                if match:
+                                    dt = datetime.strptime(match.group(1), "%Y-%m-%d")
+                                    parsed_dt = dt
+                                    logger.info(f"[{self.username}] XMP date for '{original_name}': {dt.date()}")
+                        except Exception:
+                            pass
+            except Exception as e:
+                logger.info(f"[{self.username}] EXIF read failed for '{original_name}': {e}")
+
+        # 尝试用 ffprobe 读取视频元数据
+        if parsed_dt is None and is_video:
+            try:
+                import subprocess
+                result = subprocess.run(
+                    ["ffprobe", "-v", "quiet",
+                     "-show_entries", "format_tags=creation_time,com.apple.quicktime.creationdate",
+                     "-show_format", "-of", "json", str(temp_file)],
+                    capture_output=True, text=True, timeout=10
+                )
+                if result.stdout:
+                    tags = json.loads(result.stdout).get("format", {}).get("tags", {})
+                    # 优先用 com.apple.quicktime.creationdate（iPhone 录制时间）
+                    for key in ("com.apple.quicktime.creationdate", "creation_time"):
+                        val = tags.get(key)
+                        if val:
+                            val = val.replace("+0800", "").replace("Z", "").split(".")[0]
+                            dt = datetime.fromisoformat(val)
+                            parsed_dt = dt
+                            logger.info(f"[{self.username}] ffprobe [{key}] for '{original_name}': {dt.date()}")
+                            break
+            except Exception as e:
+                logger.info(f"[{self.username}] ffprobe failed for '{original_name}': {e}")
+
+        # 尝试从文件名解析日期
+        if parsed_dt is None:
+            parsed_dt = self._parse_date_from_name(original_name)
+
+        # 最后 fallback 到文件修改时间
+        if parsed_dt is None:
+            mtime = temp_file.stat().st_mtime
+            parsed_dt = datetime.fromtimestamp(mtime)
+            logger.info(f"[{self.username}] Using mtime for '{original_name}': {parsed_dt.date()}")
+
+        date_path = self.user_dir / f"{parsed_dt.year}" / f"{parsed_dt.month:02d}" / f"{parsed_dt.day:02d}"
+        date_path.mkdir(parents=True, exist_ok=True)
+
+        # 处理文件名冲突
+        base_name = Path(original_name).stem
+        final_path = date_path / original_name
+        counter = 1
+        while final_path.exists():
+            final_path = date_path / f"{base_name}_{int(datetime.now().timestamp())}_{counter}{ext}"
+            counter += 1
+
+        temp_file.rename(final_path)
+
+        actual_size = final_path.stat().st_size
+        relative_path = str(final_path.relative_to(self.user_dir))
         file_type = "video" if ext in VIDEO_EXTS else "image"
 
         # 用 SHA256 作为 manifest key，value 为列表支持同哈希多文件
@@ -266,7 +348,7 @@ class PhotoStorage:
             manifest[file_hash] = []
         manifest[file_hash].append({
             "original_name": original_name,
-            "saved_name": file_path.name,
+            "saved_name": final_path.name,
             "size": actual_size,
             "type": file_type,
             "timestamp": timestamp,
@@ -277,7 +359,7 @@ class PhotoStorage:
 
         return {
             "original_name": original_name,
-            "saved_name": file_path.name,
+            "saved_name": final_path.name,
             "path": relative_path,
             "size": actual_size,
             "timestamp": timestamp,

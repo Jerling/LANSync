@@ -252,7 +252,9 @@ data class GalleryPhoto(
     val name: String,
     val path: String,
     val size: Long,
-    val type: String  // "image" or "video"
+    val type: String,  // "image" or "video"
+    val hasLocal: Boolean = false,  // 本地是否有同名文件
+    val localUri: String? = null    // 本地文件 URI，有则优先打开
 )
 
 /**

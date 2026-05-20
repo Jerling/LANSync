@@ -41,21 +41,53 @@ fun GalleryScreen(
 
     // Rename dialog
     if (showRenameDialog && renameTarget != null) {
-        RenameDialog(
-            originalName = renameTarget!!.name,
-            onConfirm = { newName ->
-                viewModel.renamePhoto(renameTarget!!.path, newName)
-                showRenameDialog = false
-                renameTarget = null
-            },
-            onDismiss = {
-                showRenameDialog = false
-                renameTarget = null
-            }
-        )
-    }
+            RenameDialog(
+                originalName = renameTarget!!.name,
+                onConfirm = { newName ->
+                    viewModel.renamePhoto(renameTarget!!.path, newName)
+                    showRenameDialog = false
+                    renameTarget = null
+                },
+                onDismiss = {
+                    showRenameDialog = false
+                    renameTarget = null
+                }
+            )
+        }
 
-    // 操作结果 Snackbar
+        // 删除云相册时本地文件确认 dialog
+        if (uiState.showDeleteLocalDialog && uiState.pendingDeleteInfo != null) {
+            val info = uiState.pendingDeleteInfo!!
+            AlertDialog(
+                onDismissRequest = { viewModel.dismissDeleteDialog() },
+                title = { Text("删除照片") },
+                text = {
+                    Text(
+                        "确定删除这 ${info.totalCount} 张照片？\n\n" +
+                        if (info.hasLocalCount > 0) {
+                            "其中 ${info.hasLocalCount} 张在本地也有副本，\n是否一并删除本地文件？"
+                        } else ""
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = { viewModel.confirmDelete(alsoDeleteLocal = true) }) {
+                        Text("删除云端和本地", color = MaterialTheme.colorScheme.error)
+                    }
+                },
+                dismissButton = {
+                    Row {
+                        TextButton(onClick = { viewModel.confirmDelete(alsoDeleteLocal = false) }) {
+                            Text("只删云端")
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        TextButton(onClick = { viewModel.dismissDeleteDialog() }) {
+                            Text("取消")
+                        }
+                    }
+                }
+            )
+        }
+
     val snackbarHostState = remember { SnackbarHostState() }
     LaunchedEffect(uiState.operationMessage) {
         uiState.operationMessage?.let {
@@ -169,7 +201,7 @@ fun GalleryScreen(
 
                         // 删除按钮
                         TextButton(
-                            onClick = { viewModel.deleteSelected() },
+                            onClick = { viewModel.prepareDelete() },
                             enabled = !uiState.isBatchDownloading,
                             colors = ButtonDefaults.textButtonColors(
                                 contentColor = MaterialTheme.colorScheme.error

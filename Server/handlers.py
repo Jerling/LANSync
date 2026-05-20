@@ -5,7 +5,7 @@ from pathlib import Path
 from flask import request, jsonify
 from werkzeug.utils import secure_filename
 
-from auth import require_auth, verify_user, create_token
+from auth import require_auth, verify_user, verify_user_v2, register_user, create_token
 from storage import PhotoStorage, SUPPORTED_EXTS, VIDEO_EXTS
 
 logger = logging.getLogger(__name__)
@@ -36,7 +36,9 @@ def setup_routes(app, config: dict):
         if not username or not password:
             return jsonify({"error": "Username and password required"}), 400
 
-        if not verify_user(username, password, config):
+        # 同时支持 config.yaml 用户和注册用户
+        ok = verify_user(username, password, config) or verify_user_v2(username, password)
+        if not ok:
             logger.warning(f"Failed login attempt for user: {username}")
             return jsonify({"error": "Invalid credentials"}), 401
 
@@ -48,6 +50,23 @@ def setup_routes(app, config: dict):
             "username": username,
             "message": "Login successful"
         })
+
+    @app.route("/api/register", methods=["POST"])
+    def register():
+        """用户注册"""
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "Invalid request body"}), 400
+
+        username = data.get("username", "")
+        password = data.get("password", "")
+
+        ok, msg = register_user(username, password)
+        if not ok:
+            return jsonify({"error": msg}), 400
+
+        logger.info(f"New user registered: {username}")
+        return jsonify({"message": msg, "username": username})
 
     auth_required = require_auth(config)
 
@@ -494,18 +513,4 @@ def setup_routes(app, config: dict):
         """健康检查"""
         return jsonify({"status": "healthy", "server_time": datetime.now().isoformat()})
 
-    @app.route("/", methods=["GET"])
-    def index():
-        """首页"""
-        return jsonify({
-            "service": "LANSync Server",
-            "version": "1.0.0",
-            "endpoints": [
-                "POST /api/login",
-                "GET /api/user/info",
-                "GET /api/sync/status",
-                "POST /api/upload/photo",
-                "POST /api/upload/batch",
-                "GET /api/health"
-            ]
-        })
+    # route("/", methods=["GET"]) 已移除，改由 app.py 提供静态文件
