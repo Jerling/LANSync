@@ -65,8 +65,7 @@ class TestHealth:
     def test_index(self, client):
         resp = client.get("/")
         assert resp.status_code == 200
-        data = resp.get_json()
-        assert data["service"] == "LANSync Server"
+        assert resp.content_type == "text/html; charset=utf-8"
 
 
 class TestSyncStatus:
@@ -113,7 +112,7 @@ class TestUploadPhoto:
         d = resp.get_json()
         assert d["success"] is True
         assert d["data"]["type"] == "image"
-        assert "path" in d["data"]
+        assert "saved_path" in d["data"]
 
     def test_upload_single_video(self, client, auth_headers):
         data = make_multipart({
@@ -156,6 +155,50 @@ class TestSyncExisting:
         data = resp.get_json()
         assert data["success"] is True
         assert "files" in data
+
+
+class TestCheckFiles:
+    def test_check_files_requires_auth(self, client):
+        resp = client.post("/api/sync/check", json={"files": []})
+        assert resp.status_code == 401
+
+    def test_check_files_empty_list(self, client, auth_headers):
+        resp = client.post("/api/sync/check", headers=auth_headers, json={"files": []})
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        assert data["results"] == {}
+
+    def test_check_files_not_found(self, client, auth_headers):
+        resp = client.post(
+            "/api/sync/check",
+            headers=auth_headers,
+            json={"files": [{"hash": "abc123" + "0" * 53, "name": "test.jpg", "size": 100}]},
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["results"]["abc123" + "0" * 53]["exists"] is False
+
+    def test_check_files_by_names_requires_auth(self, client):
+        resp = client.post("/api/sync/check-by-names", json={"files": []})
+        assert resp.status_code == 401
+
+    def test_check_files_by_names_empty_list(self, client, auth_headers):
+        resp = client.post("/api/sync/check-by-names", headers=auth_headers, json={"files": []})
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        assert data["results"] == {}
+
+    def test_check_files_by_names_not_found(self, client, auth_headers):
+        resp = client.post(
+            "/api/sync/check-by-names",
+            headers=auth_headers,
+            json={"files": [{"name": "nonexist.jpg", "size": 100}]},
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["results"]["nonexist.jpg_100"] is False
 
 
 class TestResumeUpload:
@@ -280,3 +323,33 @@ class TestGallery:
     def test_gallery_photo_requires_auth(self, client):
         resp = client.get("/api/gallery/photo/2026/04/27/test.jpg")
         assert resp.status_code == 401
+
+    def test_gallery_delete_requires_auth(self, client):
+        resp = client.post("/api/gallery/delete", json={"paths": []})
+        assert resp.status_code == 401
+
+    def test_gallery_delete_empty_paths(self, client, auth_headers):
+        resp = client.post("/api/gallery/delete", headers=auth_headers, json={"paths": []})
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+
+    def test_gallery_delete_invalid_paths_type(self, client, auth_headers):
+        resp = client.post("/api/gallery/delete", headers=auth_headers, json={"paths": "not a list"})
+        assert resp.status_code == 400
+
+    def test_gallery_rename_requires_auth(self, client):
+        resp = client.post("/api/gallery/rename", json={"path": "a.jpg", "new_name": "b.jpg"})
+        assert resp.status_code == 401
+
+    def test_gallery_rename_missing_fields(self, client, auth_headers):
+        resp = client.post("/api/gallery/rename", headers=auth_headers, json={"path": "a.jpg"})
+        assert resp.status_code == 400
+
+    def test_gallery_rename_not_found(self, client, auth_headers):
+        resp = client.post(
+            "/api/gallery/rename",
+            headers=auth_headers,
+            json={"path": "nonexist.jpg", "new_name": "new_name.jpg"},
+        )
+        assert resp.status_code == 404

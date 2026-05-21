@@ -1,4 +1,5 @@
 """文件存储模块"""
+import base64
 import os
 import json
 import logging
@@ -202,12 +203,31 @@ class PhotoStorage:
                 sha.update(chunk)
         return sha.hexdigest()
 
-    def save_photo(self, file_data: bytes, original_name: str, timestamp: int = None) -> dict:
+    def _compute_sha256_and_write_stream(self, input_stream, output_path: Path) -> tuple:
         """
-        保存照片/视频文件
+        从输入流读取数据，计算 SHA256 并同时写入文件。
+
+        Returns:
+            (file_hash: str, file_size: int)
+        """
+        sha = hashlib.sha256()
+        file_size = 0
+        with open(output_path, "wb") as f:
+            while True:
+                chunk = input_stream.read(65536)
+                if not chunk:
+                    break
+                sha.update(chunk)
+                f.write(chunk)
+                file_size += len(chunk)
+        return sha.hexdigest(), file_size
+
+    def save_photo(self, file_data, original_name: str, timestamp: int = None) -> dict:
+        """
+        保存照片/视频文件（支持流式处理以避免大文件 OOM）
 
         Args:
-            file_data: 文件二进制数据
+            file_data: 文件二进制数据或文件流对象
             original_name: 原始文件名
             timestamp: 照片拍摄时间戳，用于归档
 
@@ -218,8 +238,21 @@ class PhotoStorage:
         if ext not in SUPPORTED_EXTS:
             raise ValueError(f"Unsupported file type: {ext}")
 
-        file_hash = self._compute_sha256(file_data)
-        file_size = len(file_data)
+        # 先写到临时目录，再根据文件创建时间归类
+        # 优先级: EXIF拍摄时间 > st_mtime > datetime.now()
+        temp_dir = self.user_dir / "_pending"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        temp_file = temp_dir / original_name
+
+        # 支持 bytes 或文件流
+        if isinstance(file_data, bytes):
+            file_hash = self._compute_sha256(file_data)
+            file_size = len(file_data)
+            with open(temp_file, "wb") as f:
+                f.write(file_data)
+        else:
+            # 文件流：流式读取并计算哈希
+            file_hash, file_size = self._compute_sha256_and_write_stream(file_data, temp_file)
 
         # 加载用户自己的 manifest，检查内容去重
         manifest = self._load_manifest()
@@ -227,6 +260,8 @@ class PhotoStorage:
         if existing_list:
             existing_by_hash = existing_list[0]
             logger.info(f"[{self.username}] File {original_name} already exists (hash={file_hash[:16]}...), skipping duplicate save")
+            # 删除刚写入的临时文件（重复文件不需要）
+            temp_file.unlink(missing_ok=True)
             return {
                 "original_name": original_name,
                 "saved_name": existing_by_hash.get("saved_name", original_name),
@@ -237,14 +272,6 @@ class PhotoStorage:
                 "skipped": True,
                 "hash": file_hash
             }
-
-        # 先写到临时目录，再根据文件创建时间归类
-        # 优先级: EXIF拍摄时间 > st_mtime > datetime.now()
-        temp_dir = self.user_dir / "_pending"
-        temp_dir.mkdir(parents=True, exist_ok=True)
-        temp_file = temp_dir / original_name
-        with open(temp_file, "wb") as f:
-            f.write(file_data)
 
         # 尝试从客户端获取拍摄时间（最可靠）
         parsed_dt = None
@@ -484,9 +511,27 @@ class PhotoStorage:
                 with open(meta_path, "r", encoding="utf-8") as f:
                     meta = json.load(f)
                 meta["uploaded_size"] = uploaded_size
+
+                # 增量更新 SHA256 状态：存储 chunk 的 base64 数据
+                # 在 complete 时统一计算最终 SHA256
+                if "chunks" not in meta:
+                    meta["chunks"] = []
+                meta["chunks"].append(base64.b64encode(chunk_data).decode("ascii"))
+
+                # 同时计算当前累计的 SHA256（供 complete 时使用）
+                sha = hashlib.sha256()
+                for chunk_b64 in meta["chunks"]:
+                    chunk_bytes = base64.b64decode(chunk_b64)
+                    sha.update(chunk_bytes)
+                meta["sha_state"] = {
+                    "sha_hex": sha.hexdigest(),
+                    "sha_b64": base64.b64encode(sha.digest()).decode("ascii")
+                }
+
                 with open(meta_path, "w", encoding="utf-8") as f:
                     json.dump(meta, f, ensure_ascii=False)
-            except Exception:
+            except Exception as e:
+                logger.warning(f"[{self.username}] append_partial error: {e}")
                 pass
 
         return {"uploaded_size": uploaded_size}
@@ -507,6 +552,12 @@ class PhotoStorage:
         original_name = meta.get("original_name", file_id)
         total_size = meta.get("total_size", partial_path.stat().st_size)
         timestamp = meta.get("timestamp")
+        
+        # 从 meta 中获取缓存的 SHA256 状态
+        cached_sha_hex = None
+        sha_state = meta.get("sha_state", {})
+        if sha_state:
+            cached_sha_hex = sha_state.get("sha_hex", None)
 
         actual_size = partial_path.stat().st_size
         if actual_size != total_size:
@@ -535,7 +586,8 @@ class PhotoStorage:
         file_size = final_path.stat().st_size
         relative_path = str(final_path.relative_to(self.user_dir))
 
-        file_hash = self._compute_sha256_stream(final_path)
+        # 使用缓存的 SHA256 或重新计算
+        file_hash = cached_sha_hex if cached_sha_hex else self._compute_sha256_stream(final_path)
 
         manifest = self._load_manifest()
         existing = manifest.get(file_hash)
@@ -581,10 +633,10 @@ class PhotoStorage:
         partial_path = self.get_partial_path(file_id)
         meta_path = partial_path.with_suffix(".meta")
 
-        if not partial_path.exists():
+        if not partial_path.exists() and not meta_path.exists():
             return {"exists": False, "uploaded_size": 0, "total_size": 0}
 
-        uploaded_size = partial_path.stat().st_size
+        uploaded_size = 0
         total_size = 0
         original_name = file_id
 
@@ -592,10 +644,13 @@ class PhotoStorage:
             try:
                 with open(meta_path, "r", encoding="utf-8") as f:
                     meta = json.load(f)
+                uploaded_size = meta.get("uploaded_size", 0)
                 total_size = meta.get("total_size", 0)
                 original_name = meta.get("original_name", file_id)
             except Exception:
                 pass
+        elif partial_path.exists():
+            uploaded_size = partial_path.stat().st_size
 
         return {
             "exists": True,
@@ -722,26 +777,63 @@ class PhotoStorage:
         for rel_path in paths:
             full_path = self._to_fs_path(rel_path)
             thumb_path = self._get_thumb_path(rel_path)
+
+            # 处理分片上传残留文件
+            is_partial = rel_path.startswith("_partial/")
+            partial_meta_path = None
+            if is_partial:
+                partial_path = full_path
+                partial_meta_path = partial_path.with_suffix(".meta")
+            else:
+                partial_path = None
+
             try:
-                if full_path.exists():
-                    full_path.unlink()
-                if thumb_path.exists():
-                    thumb_path.unlink()
+                if is_partial:
+                    # 分片残留文件处理
+                    if partial_path.exists():
+                        partial_path.unlink()
+                    if partial_meta_path and partial_meta_path.exists():
+                        partial_meta_path.unlink()
+                else:
+                    # 普通文件删除
+                    if full_path.exists():
+                        full_path.unlink()
+                        # 验证文件确实被删除
+                        if full_path.exists():
+                            failed.append({"path": rel_path, "reason": "File still exists after unlink"})
+                            continue
+                    if thumb_path.exists():
+                        thumb_path.unlink()
+                        if thumb_path.exists():
+                            failed.append({"path": rel_path, "reason": "Thumbnail still exists after unlink"})
+                            continue
                 deleted.append(rel_path)
             except Exception as e:
                 failed.append({"path": rel_path, "reason": str(e)})
                 continue
 
+            # 从 manifest 中清理 hash 条目，并记录需要从 __index__ 清理的 (name, size)
             removed = False
             rel_path_normalized = rel_path.replace("\\", "/")
-            for hash_key, entry in list(manifest.items()):
+            for hash_key, entry_list in list(manifest.items()):
                 if len(hash_key) != 64:
                     continue
-                saved = entry.get("saved_path", "") if isinstance(entry, dict) else ""
-                saved_normalized = saved.replace("\\", "/")
-                if saved_normalized == rel_path_normalized:
-                    del manifest[hash_key]
-                    removed = True
+                # manifest[hash_key] 是列表，遍历查找匹配的 saved_path
+                if not isinstance(entry_list, list):
+                    continue
+                for i, entry in enumerate(entry_list):
+                    if not isinstance(entry, dict):
+                        continue
+                    saved = entry.get("saved_path", "")
+                    saved_normalized = saved.replace("\\", "/")
+                    if saved_normalized == rel_path_normalized:
+                        # 从列表中移除该条目
+                        entry_list.pop(i)
+                        removed = True
+                        # 如果列表为空，删除 hash key
+                        if len(entry_list) == 0:
+                            del manifest[hash_key]
+                        break
             if not removed:
                 logger.warning(f"[{self.username}] File {rel_path} not found in manifest, already deleted?")
 

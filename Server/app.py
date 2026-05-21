@@ -8,7 +8,9 @@ from pathlib import Path
 # 添加当前目录到 Python 路径
 sys.path.insert(0, str(Path(__file__).parent))
 
-from flask import Flask, send_from_directory
+from flask import Flask, send_from_directory, request
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 from handlers import setup_routes
 
 def setup_logging(log_file: str, log_level: str):
@@ -41,12 +43,20 @@ def create_app(config_path: str = "config.yaml"):
     # 创建 Flask 应用
     app = Flask(__name__)
     
+    # 配置限流器
+    limiter = Limiter(
+        app=app,
+        key_func=get_remote_address,
+        default_limits=["200 per day", "50 per hour"],
+        storage_uri="memory://",
+    )
+    
     # 配置上传大小限制
     max_size = cfg["storage"].get("max_file_size_mb", 500)
     app.config["MAX_CONTENT_LENGTH"] = max_size * 1024 * 1024
     
     # 注册路由（storage 实例在请求时按用户创建）
-    setup_routes(app, cfg)
+    setup_routes(app, cfg, limiter)
 
     # 静态文件 + SPA fallback
     static_dir = Path(__file__).parent / "static"

@@ -89,6 +89,8 @@ class SyncRepository @Inject constructor(
      * 批量检查文件是否已存在于服务器（基于内容哈希）
      */
     suspend fun checkFilesOnServer(items: List<FileCheckItem>): Result<Map<String, FileCheckResult>> {
+        // DEBUG: log first item's hash before sending
+        android.util.Log.d("SyncRepository", "checkFilesOnServer: ${items.size} items, first hash=${items.firstOrNull()?.hash}")
         return try {
             val response = api.checkFiles(CheckFilesRequest(items))
             if (response.isSuccessful && response.body() != null) {
@@ -290,15 +292,12 @@ class SyncRepository @Inject constructor(
                 var offset = 0L
                 var bytesRead: Int
 
-                while (input.read(chunk, 0, chunk.size).also { bytesRead = it } != -1) {
-                    if (bytesRead == 0) break
-
-                    // 将当前已读数据（bytesRead 字节）上传
+                while (true) {
+                    bytesRead = input.read(chunk, 0, chunk.size)
+                    if (bytesRead == -1) break
                     val result = uploadChunk(chunk, bytesRead, fileId, fileName, mediaType)
                     if (result != null) return result  // 失败则立即返回
                     offset += bytesRead
-
-                    // 如果最后一块不足 CHUNK_SIZE，说明到文件尾了，跳出循环
                     if (bytesRead < chunk.size) break
                 }
             } ?: return Result.failure(Exception("Cannot open input stream for $fileName"))
@@ -311,17 +310,24 @@ class SyncRepository @Inject constructor(
         }
 
         val uploadData = completeResult.body()!!.data!!
+
+        // Always insert into synced_files so future Stage 1 matching succeeds.
+        // When skipped=true the server detected a hash duplicate; we record hash+name+size
+        // but serverPath stays null so this file is correctly matched by Stage 1 next scan.
         syncedFileDao.insert(
             SyncedFileEntity(
                 filePath = contentUri.toString(),
                 fileName = fileName,
                 fileSize = size,
                 timestamp = timestamp ?: 0,
-                serverPath = uploadData.savedPath,
+                serverPath = if (uploadData.skipped) "" else uploadData.savedPath,
                 hash = uploadData.hash
             )
         )
-        return Result.success(UploadResponse(true, "Uploaded", uploadData))
+        if (uploadData.skipped) {
+            android.util.Log.i("SyncRepository", "uploadPhotoResumable: server skipped duplicate for $fileName (hash=${uploadData.hash})")
+        }
+        return Result.success(UploadResponse(true, if (uploadData.skipped) "Skipped (duplicate)" else "Uploaded", uploadData))
     }
 
     /**

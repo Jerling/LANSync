@@ -145,16 +145,60 @@ class ApiClient {
     if (timestamp) {
       formData.append('timestamp', Math.floor(timestamp).toString())
     }
-    await axios.post(`${this.baseUrl}api/upload/photo`, formData, {
-      headers: {
-        'Authorization': `Bearer ${this.token}`,
-      },
-      onUploadProgress: (e) => {
-        if (e.total && onProgress) {
-          onProgress(Math.round((e.loaded * 100) / e.total))
+
+    // W-3: Add error handling and retry logic for upload
+    const maxRetries = 3
+    let lastError: Error | null = null
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        await axios.post(`${this.baseUrl}api/upload/photo`, formData, {
+          headers: {
+            'Authorization': `Bearer ${this.token}`,
+          },
+          onUploadProgress: (e) => {
+            if (e.total && onProgress) {
+              onProgress(Math.round((e.loaded * 100) / e.total))
+            }
+          },
+        })
+        return // Success, exit the retry loop
+      } catch (error: any) {
+        lastError = error
+
+        // Check if it's a 401 error (token expired/invalid)
+        if (error.response?.status === 401) {
+          // Clear auth and throw error indicating re-login is needed
+          this.clearAuth()
+          throw new Error('AUTH_EXPIRED: Token expired, please re-login')
         }
-      },
-    })
+
+        // Check if it's a network error (no response from server)
+        if (!error.response) {
+          // Network error - retry if we have attempts left
+          if (attempt < maxRetries) {
+            // Wait before retrying with exponential backoff
+            await new Promise(resolve => setTimeout(resolve, 1000 * attempt))
+            continue
+          }
+        }
+
+        // For other errors (4xx client errors, 5xx server errors), don't retry
+        if (error.response?.status >= 400 && error.response?.status < 500) {
+          throw error
+        }
+
+        // For server errors (5xx) or network errors on last attempt, throw
+        if (attempt >= maxRetries) {
+          throw error
+        }
+      }
+    }
+
+    // This should never be reached, but just in case
+    if (lastError) {
+      throw lastError
+    }
   }
 }
 

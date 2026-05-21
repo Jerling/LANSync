@@ -419,11 +419,9 @@ class GalleryViewModel @Inject constructor(
             showDeleteLocalDialog = false,
             pendingDeleteInfo = null
         )
-        if (alsoDeleteLocal) {
-            deleteSelected(alsoDeleteLocal = true)
-        } else {
-            deleteSelected(alsoDeleteLocal = false)
-        }
+        // 注意：alsoDeleteLocal=false 时仍然执行云端删除（只删云端），这是用户主动选择的操作。
+        // 只有 dismissDeleteDialog()（取消按钮）才真正取消本次删除。
+        deleteSelected(alsoDeleteLocal = alsoDeleteLocal)
     }
 
     /** 批量删除（云端） */
@@ -436,12 +434,14 @@ class GalleryViewModel @Inject constructor(
         val state = _uiState.value
         if (state.selectedIds.isEmpty()) return
 
-        val paths = mutableListOf<String>()
+        // 收集要删除的文件信息：path 用于云端删除，name+size 用于本地 DB 记录的兜底删除
+        data class DeletionItem(val path: String, val name: String, val size: Long)
+        val deletionItems = mutableListOf<DeletionItem>()
         val localPhotoIdsToDelete = mutableSetOf<String>()
         for (group in state.groups) {
             for (photo in group.photos) {
                 if (photo.id in state.selectedIds) {
-                    paths.add(photo.path)
+                    deletionItems.add(DeletionItem(path = photo.path, name = photo.name, size = photo.size))
                     if (alsoDeleteLocal && photo.hasLocal) {
                         localPhotoIdsToDelete.add(photo.id)
                     }
@@ -452,15 +452,29 @@ class GalleryViewModel @Inject constructor(
         viewModelScope.launch {
             _uiState.value = state.copy(isOperationInProgress = true, operationMessage = null)
             try {
+                val paths = deletionItems.map { it.path }
                 val response = ApiClient.getApi().deletePhotos(DeletePhotosRequest(paths))
                 if (response.isSuccessful && response.body() != null) {
                     val body = response.body()!!
 
                     // 删除成功后，清理本地同步记录（以便后续可重新上传）
+                    // 注意：对于上传到云端的文件（serverPath=""），deleteByServerPath 不会匹配到记录，
+                    // 因为数据库中 serverPath 为空字符串，而查询用的是 photo.path。
+                    // 因此需要用 name+size 兜底删除这些孤立的本地记录，避免 re-sync 时错误地重新上传。
                     if (body.deleted.isNotEmpty()) {
                         withContext(Dispatchers.IO) {
+                            // 配对：deleted path → 对应的 name+size（用于兜底删除）
+                            val deletedPathToItem = deletionItems.associate { it.path to it }
                             for (path in body.deleted) {
-                                syncedFileDao.deleteByServerPath(path)
+                                val deleted = syncedFileDao.deleteByServerPath(path)
+                                // 如果 deleteByServerPath 没有删除任何记录（uploaded 文件，serverPath=""），
+                                // 用 name+size 兜底删除孤立记录
+                                if (deleted == 0) {
+                                    val item = deletedPathToItem[path]
+                                    if (item != null) {
+                                        syncedFileDao.deleteByNameAndSizeFallback(item.name, item.size)
+                                    }
+                                }
                             }
                         }
                     }
@@ -471,7 +485,7 @@ class GalleryViewModel @Inject constructor(
                     }
 
                     val msg = if (body.failed.isNotEmpty()) {
-                        val localMsg = if (alsoDeleteLocal && body.deleted.isNotEmpty()) {
+                        val localMsg = if (alsoDeleteLocal && localPhotoIdsToDelete.isNotEmpty()) {
                             "，本地 ${localPhotoIdsToDelete.size} 张已删除"
                         } else ""
                         "删除完成：${body.deleted.size} 张成功，${body.failed.size} 张失败$localMsg"

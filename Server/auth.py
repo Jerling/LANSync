@@ -8,6 +8,16 @@ from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 from flask import request, jsonify
+from argon2 import PasswordHasher
+from argon2.exceptions import VerifyMismatchError
+
+
+def _get_jwt_secret(config: dict) -> str:
+    """Get JWT secret from environment variable LANSYNC_JWT_SECRET, fallback to config"""
+    secret = os.environ.get("LANSYNC_JWT_SECRET") or config["auth"].get("jwt_secret")
+    if not secret:
+        raise ValueError("JWT secret not configured! Set LANSYNC_JWT_SECRET env var.")
+    return secret
 
 
 def load_config(config_path: str = "config.yaml") -> dict:
@@ -66,6 +76,9 @@ def verify_user(username: str, password: str, config: dict) -> bool:
 
 _USERS_FILE = Path(__file__).parent / "users.json"
 
+# Argon2 password hasher for new passwords
+_ph = PasswordHasher()
+
 def _load_users() -> dict:
     if not _USERS_FILE.exists():
         return {}
@@ -76,8 +89,13 @@ def _save_users(users: dict) -> None:
     with open(_USERS_FILE, "w", encoding="utf-8") as f:
         json.dump(users, f, ensure_ascii=False, indent=2)
 
-def _hash_password(password: str, salt: str) -> str:
-    return hashlib.sha256((password + salt).encode()).hexdigest()
+def _hash_password(password: str, salt: str = None) -> str:
+    """Hash password using argon2. Salt is not needed for argon2 but kept for API compatibility."""
+    return _ph.hash(password)
+
+def _verify_hash_legacy(password: str, salt: str, stored_hash: str) -> bool:
+    """Verify password against legacy SHA256 hash."""
+    return stored_hash == hashlib.sha256((password + salt).encode()).hexdigest()
 
 def register_user(username: str, password: str) -> dict:
     """注册新用户，返回 (success, message)"""
@@ -94,18 +112,28 @@ def register_user(username: str, password: str) -> dict:
     if username in users:
         return False, "用户名已存在"
 
-    salt = os.urandom(16).hex()
     users[username] = {
-        "salt": salt,
-        "password_hash": _hash_password(password, salt),
+        "password_hash": _hash_password(password),
     }
     _save_users(users)
     return True, "注册成功"
 
 def verify_user_v2(username: str, password: str) -> bool:
-    """验证注册用户"""
+    """验证注册用户，支持 argon2 和旧 SHA256 格式"""
     users = _load_users()
     if username not in users:
         return False
     u = users[username]
-    return u["password_hash"] == _hash_password(password, u["salt"])
+    stored_hash = u["password_hash"]
+    
+    # Check if it's argon2 format (new)
+    if stored_hash.startswith("$argon2"):
+        try:
+            _ph.verify(stored_hash, password)
+            return True
+        except VerifyMismatchError:
+            return False
+    # Legacy SHA256 format: salt:hash
+    else:
+        salt = u.get("salt", "")
+        return _verify_hash_legacy(password, salt, stored_hash)

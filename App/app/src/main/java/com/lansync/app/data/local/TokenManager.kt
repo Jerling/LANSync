@@ -7,6 +7,9 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.*
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -17,6 +20,8 @@ private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(na
 class TokenManager @Inject constructor(
     @ApplicationContext private val context: Context
 ) {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     companion object {
         private val TOKEN_KEY = stringPreferencesKey("token")
         private val USERNAME_KEY = stringPreferencesKey("username")
@@ -29,9 +34,9 @@ class TokenManager @Inject constructor(
         preferences[PASSWORD_KEY]
     }
 
-    val tokenFlow: Flow<String?> = context.dataStore.data.map { preferences ->
-        preferences[TOKEN_KEY]
-    }
+    val tokenFlow: StateFlow<String?> = context.dataStore.data
+        .map { preferences -> preferences[TOKEN_KEY] }
+        .stateIn(scope, SharingStarted.Eagerly, null)
 
     val usernameFlow: Flow<String?> = context.dataStore.data.map { preferences ->
         preferences[USERNAME_KEY]

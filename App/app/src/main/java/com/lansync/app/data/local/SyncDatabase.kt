@@ -47,6 +47,16 @@ interface SyncedFileDao {
     @Delete
     suspend fun delete(syncedFile: SyncedFileEntity)
 
+    @Query("DELETE FROM synced_files WHERE serverPath = :serverPath")
+    suspend fun deleteByServerPath(serverPath: String): Int
+
+    /**
+     * Fallback deletion by name+size — used when serverPath is empty (uploaded files
+     * where savedPath was null/empty). Must match exactly to avoid deleting wrong records.
+     */
+    @Query("DELETE FROM synced_files WHERE fileName = :fileName AND fileSize = :fileSize AND (serverPath = '' OR serverPath IS NULL)")
+    suspend fun deleteByNameAndSizeFallback(fileName: String, fileSize: Long)
+
     @Query("DELETE FROM synced_files")
     suspend fun deleteAll()
 

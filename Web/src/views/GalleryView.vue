@@ -61,9 +61,9 @@
             class="photo-item"
             :data-id="photo.id"
             :data-selected="isSelected(photo.id)"
-            @pointerdown.stop="onPhotoPointerDown(photo.id)"
-            @pointerup.stop="onPhotoPointerUp(photo.id)"
-            @pointerleave.stop="cancelPointer(photo.id)"
+            @touchstart.stop.prevent="onPhotoTouchStart(photo.id, $event)"
+            @touchend.stop.prevent="onPhotoTouchEnd(photo.id)"
+            @touchcancel.stop="cancelTouch(photo.id)"
           >
             <img
               :src="getThumbnailUrl(photo)"
@@ -168,10 +168,65 @@ function isSelected(id: string): string {
 }
 
 // --- DOM event delegation (single handler on container) ---
-// Single click = preview, long press (500ms) = selection mode
+
+// Touch event support for iOS Safari compatibility
+// Single tap = preview, long press (500ms) = selection mode
+let touchTimer: number | null = null
+let touchTargetId: string | null = null
+let touchMoved = false
+const LONG_PRESS_MS = 500
+
+// Touch event handlers for iOS Safari
+function onPhotoTouchStart(id: string, e: TouchEvent) {
+  // iOS Safari may fire both touch and mouse events - prevent mouse event emulation
+  e.preventDefault()
+
+  // iOS Safari may fire both touch and mouse events - track if touch moved
+  touchMoved = false
+  touchTargetId = id
+
+  // Start long press timer
+  touchTimer = window.setTimeout(() => {
+    // Long press fires - enter selection mode
+    if (!selecting.value) {
+      selecting.value = true
+      selectedIds.value = new Set([id])
+    } else {
+      const s = new Set(selectedIds.value)
+      s.has(id) ? s.delete(id) : s.add(id)
+      if (s.size === 0) { selecting.value = false; selectedIds.value = new Set(); return }
+      selectedIds.value = s
+    }
+    touchTimer = null
+    touchTargetId = null
+    touchMoved = true  // Mark as moved to prevent touchend from triggering preview
+  }, LONG_PRESS_MS)
+}
+
+function onPhotoTouchEnd(id: string) {
+  if (touchTimer !== null && touchTargetId === id && !touchMoved) {
+    // Short tap — preview photo (only if same element as touchstart and not moved)
+    clearTimeout(touchTimer)
+    touchTimer = null
+    openPreview(id)
+  }
+  touchTimer = null
+  touchTargetId = null
+  touchMoved = false
+}
+
+function cancelTouch(_id: string) {
+  if (touchTimer !== null) {
+    clearTimeout(touchTimer)
+    touchTimer = null
+    touchTargetId = null
+    touchMoved = false
+  }
+}
+
+// Legacy pointer event handlers for desktop/browsers without touch
 let pressTimer: number | null = null
 let pressTargetId: string | null = null
-const LONG_PRESS_MS = 500
 
 function onPhotoPointerDown(id: string) {
   pressTargetId = id
@@ -473,6 +528,9 @@ onMounted(() => { loadGallery() })
   cursor: pointer;
   background: #eee;
   border-radius: 2px;
+  touch-action: manipulation; /* Prevent double-tap zoom on iOS Safari */
+  -webkit-touch-callout: none; /* Disable long-press menu on iOS */
+  user-select: none; /* Prevent text selection on long press */
 }
 
 /* Selection is CSS-driven — data-selected attribute is toggled by Vue, classes are static */

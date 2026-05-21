@@ -18,12 +18,18 @@ def _get_storage(config: dict):
     return PhotoStorage.get_instance(base_dir, username)
 
 
-def setup_routes(app, config: dict):
+def setup_routes(app, config: dict, limiter):
     """配置所有路由"""
+
+    # 限流 JSON 错误处理
+    @app.errorhandler(429)
+    def ratelimit_handler(e):
+        return jsonify({"error": "Rate limit exceeded. Please try again later."}), 429
 
     # ==================== 认证相关 ====================
 
     @app.route("/api/login", methods=["POST"])
+    @limiter.limit("5 per minute")
     def login():
         """用户登录"""
         data = request.get_json()
@@ -60,6 +66,11 @@ def setup_routes(app, config: dict):
 
         username = data.get("username", "")
         password = data.get("password", "")
+        confirm_password = data.get("confirm_password", "")
+
+        # Server-side password confirmation validation (W-1)
+        if password != confirm_password:
+            return jsonify({"error": "Password and confirm password do not match"}), 400
 
         ok, msg = register_user(username, password)
         if not ok:
@@ -95,6 +106,7 @@ def setup_routes(app, config: dict):
         })
 
     @app.route("/api/upload/photo", methods=["POST"])
+    @limiter.limit("200 per minute")
     @auth_required
     def upload_photo():
         """上传单张照片/视频"""
@@ -115,11 +127,10 @@ def setup_routes(app, config: dict):
         device_id = request.form.get("device_id", "unknown")
 
         original_name = secure_filename(file.filename)
-        file_data = file.read()
 
         storage = _get_storage(config)
         try:
-            result = storage.save_photo(file_data, original_name, timestamp)
+            result = storage.save_photo(file.stream, original_name, timestamp)
             logger.info(f"File uploaded: {original_name} ({result['type']}) by {request.user} from {device_id}")
             return jsonify({
                 "success": True,
@@ -158,7 +169,7 @@ def setup_routes(app, config: dict):
             timestamp = request.form.get(f"timestamp_{file.filename}", type=int)
             original_name = secure_filename(file.filename)
             try:
-                result = storage.save_photo(file.read(), original_name, timestamp)
+                result = storage.save_photo(file.stream, original_name, timestamp)
                 results.append({
                     "original_name": original_name,
                     "saved_path": result["path"],
@@ -206,7 +217,7 @@ def setup_routes(app, config: dict):
             entry = entries[0] if isinstance(entries, list) and entries else entries
             if not isinstance(entry, dict):
                 continue
-            original_name = entry.get("original_name", "")
+            original_name = entry.get("original_name", "").lower()
             size = entry.get("size", 0)
             name_size_index[(original_name, size)] = hash_key
 
@@ -214,7 +225,7 @@ def setup_routes(app, config: dict):
         for item in files:
             name = item.get("name", "")
             size = item.get("size", 0)
-            key = (name, size)
+            key = (name.lower(), size)
             results[f"{name}_{size}"] = key in name_size_index
 
         return jsonify({"success": True, "results": results})
@@ -304,6 +315,7 @@ def setup_routes(app, config: dict):
         })
 
     @app.route("/api/upload/resume/chunk", methods=["POST"])
+    @limiter.limit("200 per minute")
     @auth_required
     def resume_chunk():
         """上传分片数据"""

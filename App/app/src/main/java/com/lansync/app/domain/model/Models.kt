@@ -159,7 +159,8 @@ data class UploadData(
     val savedPath: String,
     val size: Long,
     val type: String,  // "image" or "video"
-    val hash: String = ""  // SHA256 from server
+    val hash: String = "",  // SHA256 from server
+    val skipped: Boolean = false  // true when server detected duplicate hash and skipped the file
 )
 
 /**

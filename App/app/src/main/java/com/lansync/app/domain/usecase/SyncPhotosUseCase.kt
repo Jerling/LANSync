@@ -5,6 +5,7 @@ import android.content.ContentUris
 import android.content.Context
 import android.os.Build
 import android.provider.MediaStore
+import com.lansync.app.data.local.SyncedFileDao
 import com.lansync.app.data.repository.SyncRepository
 import com.lansync.app.domain.model.FileCheckItem
 import com.lansync.app.domain.model.FileNameSizeItem
@@ -18,11 +19,13 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flow
 import java.io.File
 import java.security.MessageDigest
+import java.util.LinkedHashMap
 import javax.inject.Inject
 
 class SyncPhotosUseCase @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val repository: SyncRepository
+    private val repository: SyncRepository,
+    private val syncedFileDao: SyncedFileDao
 ) {
     private val _debugLogs = MutableStateFlow<List<String>>(emptyList())
     val debugLogs: StateFlow<List<String>> = _debugLogs.asStateFlow()
@@ -40,9 +43,12 @@ class SyncPhotosUseCase @Inject constructor(
     private fun logScan(message: String) = log("SyncPhotos", message)
     /**
      * 扫描本地照片
+     * 注意：MediaStore 可能返回同一文件的多个条目（不同 gallery app 写入的重复记录），
+     * 使用 LinkedHashSet 按 contentUri 去重，保证同一文件只被扫描一次。
      */
     suspend fun scanLocalPhotos(): List<PhotoFile> {
-        val photos = mutableListOf<PhotoFile>()
+        // LinkedHashSet 保留插入顺序并去重（按 contentUri）
+        val photoMap = LinkedHashMap<android.net.Uri, PhotoFile>()
 
         val imageProjection = arrayOf(
             MediaStore.Images.Media._ID,
@@ -66,7 +72,7 @@ class SyncPhotosUseCase @Inject constructor(
         queryMediaStore(
             MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
             imageProjection,
-            photos,
+            photoMap,
             isVideo = false
         )
 
@@ -74,18 +80,19 @@ class SyncPhotosUseCase @Inject constructor(
         queryMediaStore(
             MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
             videoProjection,
-            photos,
+            photoMap,
             isVideo = true
         )
 
-        logScan("scanLocalPhotos: found ${photos.size} photos/videos")
+        val photos = photoMap.values.toList()
+        logScan("scanLocalPhotos: found ${photos.size} unique photos/videos (deduped from MediaStore)")
         return photos
     }
 
     private fun queryMediaStore(
         uri: android.net.Uri,
         projection: Array<String>,
-        photos: MutableList<PhotoFile>,
+        photoMap: LinkedHashMap<android.net.Uri, PhotoFile>,
         isVideo: Boolean
     ) {
         val contentResolver: ContentResolver = context.contentResolver
@@ -126,15 +133,16 @@ class SyncPhotosUseCase @Inject constructor(
                 // 构建内容URI用于访问文件
                 val contentUri = ContentUris.withAppendedId(uri, id)
 
-                photos.add(
-                    PhotoFile(
-                        contentUri = contentUri,
-                        path = path,
-                        name = name,
-                        size = size,
-                        timestamp = effectiveTimestamp,
-                        isVideo = isVideo
-                    )
+                // 去重：同一 contentUri 只保留第一次出现的记录
+                if (photoMap.containsKey(contentUri)) continue
+
+                photoMap[contentUri] = PhotoFile(
+                    contentUri = contentUri,
+                    path = path,
+                    name = name,
+                    size = size,
+                    timestamp = effectiveTimestamp,
+                    isVideo = isVideo
                 )
             }
         }
@@ -188,6 +196,7 @@ class SyncPhotosUseCase @Inject constructor(
         for ((index, photo) in needHashCheck.withIndex()) {
             if (photo.name.isNullOrBlank()) continue
             val hash = computeSha256(photo.contentUri)
+            android.util.Log.d("SyncPhotos", "computeSha256 result for ${photo.name}: len=${hash.length}, hash=${hash}")
             if (hash.isNotEmpty()) {
                 photosWithHash.add(photo to hash)
             }
@@ -203,25 +212,37 @@ class SyncPhotosUseCase @Inject constructor(
 
         // 用 SHA256 精确确认（可能 name+size 相同但内容不同，或 Server 漏存的）
         val checkItems = photosWithHash.map { (photo, hash) -> FileCheckItem(photo.name, photo.size, hash) }
+        logScan("Stage 2: calling checkFilesOnServer for ${checkItems.size} items, first hash=${checkItems.firstOrNull()?.hash?.take(16)}")
         val hashResult = repository.checkFilesOnServer(checkItems)
+        logScan("Stage 2: checkFilesOnServer result success=${hashResult.isSuccess}, mapSize=${hashResult.getOrNull()?.size}")
         val hashExists = hashResult.getOrNull() ?: emptyMap()
 
         return photosWithHash.filter { (photo, hash) ->
             val result = hashExists[hash]
             when {
                 result == null -> {
-                    // hash 查询没返回（网络问题），降级：传 name+size 都不存在才上传
-                    logScan("Hash check returned null for ${photo.name}, falling back to name+size")
-                    val key = "${photo.name}_${photo.size}"
-                    definitelySynced.add(key)
-                    false
+                    // Server 返回 null（hash 不在响应 map 中）：
+                    // 可能是 Server 没有此 hash 的记录，也可能是 API 错误/网络问题
+                    // 先查本地 DB：若本地已有同 name+size+hash 的记录，说明文件之前已同步过，
+                    // Server 只是因 bug 没有存到。此时跳过上传，避免死循环。
+                    // 若本地没有记录，则确认为新文件，正常上传。
+                    val localRecord = syncedFileDao.findByNameAndSize(photo.name, photo.size)
+                    if (localRecord != null && localRecord.hash == hash) {
+                        logScan("Hash check null for ${photo.name} but local DB has matching record — skipping (server bug)")
+                        false
+                    } else {
+                        logScan("Hash check null for ${photo.name}, will re-upload (no local DB record)")
+                        true
+                    }
                 }
                 result.exists -> {
                     // Server 有，跳过
+                    logScan("Stage 2: hash ${hash.take(16)} exists=true for ${photo.name}, skipping")
                     false
                 }
                 else -> {
                     // Server 没有，需要上传
+                    logScan("Stage 2: hash ${hash.take(16)} exists=false for ${photo.name}, will upload")
                     true
                 }
             }
@@ -241,7 +262,11 @@ class SyncPhotosUseCase @Inject constructor(
                     digest.update(buffer, 0, bytesRead)
                 }
             }
-            digest.digest().joinToString("") { "%02x".format(it.toInt()) }
+            val rawDigest = digest.digest()
+            android.util.Log.d("SyncPhotos", "computeSha256 raw bytes: size=${rawDigest.size}, first3=${rawDigest.take(3).joinToString { "%02x" }}")
+            val hex = rawDigest.joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
+            android.util.Log.d("SyncPhotos", "computeSha256 hex: len=${hex.length}, first16=${hex.take(16)}")
+            hex
         } catch (e: Exception) {
             logScan("computeSha256 failed for $uri: ${e.message}")
             ""

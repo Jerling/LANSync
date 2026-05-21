@@ -6,5 +6,48 @@
   "sherry": {
     "salt": "433aef5c3e22c344705ed0481ea8e390",
     "password_hash": "ed257a18ad0fb36c7725f86829077cbea9401a5812c5b5fb01f86431a3409be7"
+  },
+  "testdebuguser": {
+    "salt": "f3ad9026260584f2b9f665c4db3a0039",
+    "password_hash": "983ccc6619f84c4a47f4320e56b63c3dd05623572af2f307848fc6be33bca104"
+  },
+  "testmismatch123": {
+    "salt": "b352fae665aecccd058975dfd4ce4438",
+    "password_hash": "de73a7890626a1ac6f22add38417271b3f26e710eca97d9417f906892a20e173"
+  },
+  "testdebug789": {
+    "salt": "55b68b453c0312bffdc7a8068c2304c4",
+    "password_hash": "e165137d143943a559ebb9f9affafc09930f2785eaa7e1719c915c5c689ff5c7"
+  },
+  "testuser1778855655": {
+    "salt": "ad585a4ec1f951a3d0c654607d2db7e6",
+    "password_hash": "81b3f9497409a59d3516d56fd8fd96d1e11352a0b3426ae91b173bbfad7da593"
+  },
+  "testuser1778855679": {
+    "salt": "7c4fe6e9c48d1c921267840f8399e80d",
+    "password_hash": "48b13bd03bd016d7198358963e66fd67c42d6d5cf0568be88d7e1da019bf1c65"
+  },
+  "testupload1778855679": {
+    "salt": "b653d32def2b966c3ab059fa887888c5",
+    "password_hash": "024fe13b71ac7136697c95f4e4831597dcf9aef0f1315a8c5a25ef3fb20f6d48"
+  },
+  "testuser1778855702": {
+    "salt": "bf245cc78145ae2b28cf3bc6c3052cce",
+    "password_hash": "39898822ff4f3f01a8467dabc1ac37d40e9b1b8f64b75e477226256fee0b7ecb"
+  },
+  "testupload1778855729": {
+    "password_hash": "$argon2id$v=19$m=65536,t=3,p=4$J8psftk7JaK8N5EJ/IuRCA$N++IYtTbbOpKlbv5uCzUSL25AYGGtpJ4bnS+nVcH2Kc"
+  },
+  "testupload1778855772": {
+    "password_hash": "$argon2id$v=19$m=65536,t=3,p=4$vpoLYU/lX7kaTZkqLab5vw$SpUht8sRr+ujMRONnRDuc56Am6NdC/qe4eGsikm/kQc"
+  },
+  "testupload1778855836": {
+    "password_hash": "$argon2id$v=19$m=65536,t=3,p=4$wdbKm8TDgXwu42gxCBwv4w$zBklBb+cvpIoFYrxC+H/cXHbc0Luvubs2yAhlwhMQKs"
+  },
+  "testupload1778856309": {
+    "password_hash": "$argon2id$v=19$m=65536,t=3,p=4$6NYpOueL75CLgu3o5SGs0A$VAUyWdV6H52oDHlbwS2K2+aTjPlJrU5FjnfMMF58pDo"
+  },
+  "testupload1779062013": {
+    "password_hash": "$argon2id$v=19$m=65536,t=3,p=4$5IfTV4JtexkypJq1l9rYAA$68CfQTEght09xCXuwosNKwF7/p2IBjfnMhSLI8Z8DrE"
   }
 }

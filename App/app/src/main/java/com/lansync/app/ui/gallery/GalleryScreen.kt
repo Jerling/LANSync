@@ -56,36 +56,63 @@ fun GalleryScreen(
         }
 
         // 删除云相册时本地文件确认 dialog
+        // 注意："只删云端" 是删除操作，不是取消，不应放在 dismissButton 中。
+        // 用自定义 Dialog 布局，将两个删除选项并排，"取消"单独放在下面，避免与 dismissButton 混淆。
         if (uiState.showDeleteLocalDialog && uiState.pendingDeleteInfo != null) {
             val info = uiState.pendingDeleteInfo!!
-            AlertDialog(
-                onDismissRequest = { viewModel.dismissDeleteDialog() },
-                title = { Text("删除照片") },
-                text = {
-                    Text(
-                        "确定删除这 ${info.totalCount} 张照片？\n\n" +
-                        if (info.hasLocalCount > 0) {
-                            "其中 ${info.hasLocalCount} 张在本地也有副本，\n是否一并删除本地文件？"
-                        } else ""
-                    )
-                },
-                confirmButton = {
-                    TextButton(onClick = { viewModel.confirmDelete(alsoDeleteLocal = true) }) {
-                        Text("删除云端和本地", color = MaterialTheme.colorScheme.error)
-                    }
-                },
-                dismissButton = {
-                    Row {
-                        TextButton(onClick = { viewModel.confirmDelete(alsoDeleteLocal = false) }) {
-                            Text("只删云端")
+            androidx.compose.ui.window.Dialog(
+                onDismissRequest = { viewModel.dismissDeleteDialog() }
+            ) {
+                androidx.compose.material3.Surface(
+                    shape = MaterialTheme.shapes.extraLarge,
+                    tonalElevation = 6.dp
+                ) {
+                    androidx.compose.foundation.layout.Column(
+                        modifier = Modifier.padding(24.dp)
+                    ) {
+                        Text(
+                            "删除照片",
+                            style = MaterialTheme.typography.headlineSmall,
+                            modifier = Modifier.padding(bottom = 16.dp)
+                        )
+                        Text(
+                            "确定删除这 ${info.totalCount} 张照片？" +
+                            if (info.hasLocalCount > 0) {
+                                "\n\n其中 ${info.hasLocalCount} 张在本地也有副本，\n是否一并删除本地文件？"
+                            } else "",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        androidx.compose.foundation.layout.Spacer(modifier = Modifier.height(24.dp))
+                        // 第一行：两个删除选项（都是 destructive）
+                        androidx.compose.foundation.layout.Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            androidx.compose.material3.TextButton(
+                                onClick = { viewModel.confirmDelete(alsoDeleteLocal = false) },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("只删云端")
+                            }
+                            androidx.compose.material3.TextButton(
+                                onClick = { viewModel.confirmDelete(alsoDeleteLocal = true) },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("删除云端和本地", color = MaterialTheme.colorScheme.error)
+                            }
                         }
-                        Spacer(Modifier.width(8.dp))
-                        TextButton(onClick = { viewModel.dismissDeleteDialog() }) {
-                            Text("取消")
+                        // 第二行：取消
+                        androidx.compose.foundation.layout.Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End
+                        ) {
+                            androidx.compose.material3.TextButton(onClick = { viewModel.dismissDeleteDialog() }) {
+                                Text("取消")
+                            }
                         }
                     }
                 }
-            )
+            }
         }
 
     val snackbarHostState = remember { SnackbarHostState() }
